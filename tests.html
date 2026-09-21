@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<!-- mafia v0.1 | tests.html | 22 Sep 2026 | disposable — delete before go-live -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Weekly Mafia — Engine Tests</title>
+<style>
+  :root { --navy:#0e1524; --card:#18213a; --line:#2a3550; }
+  body { margin:0; padding:32px; background:#0e1524; color:#e7ecf5;
+         font:15px/1.5 "Segoe UI", system-ui, sans-serif; }
+  h1 { font-size:20px; margin:0 0 4px; letter-spacing:.06em; text-transform:uppercase; }
+  .sub { color:#8fa0bd; font-size:13px; margin-bottom:24px; }
+  #banner { padding:14px 18px; border-radius:8px; font-weight:600; margin-bottom:24px;
+            border-left:4px solid; }
+  .ok   { background:#12301f; border-color:#3fbf6f; color:#b8f0cc; }
+  .bad  { background:#3a1418; border-color:#d9534f; color:#ffc9c6; }
+  .wait { background:#1b2236; border-color:#5a7099; color:#9fb2d4; }
+  .suite { margin:20px 0 6px; font-size:12px; letter-spacing:.14em;
+           text-transform:uppercase; color:#c9a227; }
+  .row { display:flex; gap:12px; padding:5px 10px; border-radius:5px; }
+  .row:nth-child(odd) { background:#141c30; }
+  .tag { flex:0 0 46px; font-weight:700; font-size:11px; letter-spacing:.08em;
+         padding-top:2px; }
+  .p .tag { color:#3fbf6f; } .f .tag { color:#ff6b66; }
+  .err { color:#ff9f9b; font-size:13px; margin-top:3px; font-family:Consolas, monospace; }
+</style>
+</head>
+<body>
+  <h1>Weekly Mafia — Engine Tests</h1>
+  <div class="sub">
+    Verifies <code>engine.js</code> and <code>store.js</code> against the rules in the
+    Game Design Overview. Must be opened over http:// — the GitHub Pages URL, not a local file.
+  </div>
+  <div id="banner" class="wait">Running…</div>
+  <div id="out"></div>
+
+<script type="module">
+  const banner = document.getElementById('banner');
+  const out = document.getElementById('out');
+  try {
+    const mod = await import('./tests.js');
+    const { results, passed, failed, total } = await mod.run();
+    banner.className = failed.length ? 'bad' : 'ok';
+    banner.textContent = failed.length
+      ? `${failed.length} of ${total} tests FAILED`
+      : `All ${passed} tests passed`;
+    let suite = '';
+    for (const r of results) {
+      if (r.suite !== suite) {
+        suite = r.suite;
+        const h = document.createElement('div');
+        h.className = 'suite'; h.textContent = suite; out.appendChild(h);
+      }
+      const row = document.createElement('div');
+      row.className = 'row ' + (r.pass ? 'p' : 'f');
+      row.innerHTML = `<span class="tag">${r.pass ? 'PASS' : 'FAIL'}</span>
+        <span>${r.name}${r.pass ? '' : `<div class="err">${r.error}</div>`}</span>`;
+      out.appendChild(row);
+    }
+  } catch (err) {
+    banner.className = 'bad';
+    banner.textContent = 'Could not load modules: ' + err.message;
+    out.innerHTML = `<div class="err">If this says "Cross origin requests are only supported for
+      protocol schemes: http…", you opened the file directly from disk. Use the GitHub Pages URL.</div>`;
+  }
+</script>
+</body>
+</html>
