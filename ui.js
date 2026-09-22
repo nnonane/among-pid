@@ -6,12 +6,14 @@
 
 import * as E from './engine.js';
 import { Store, LocalAdapter, newPlayer, newInventoryItem } from './store.js';
+import { chooseAdapter, mountStorageButton } from './cloud.js';
 import {
   GAME_TITLE, GAME_SUBTITLE, MINIGAMES,
   PHASE_LABEL, PHASE_HINT, ROLE_LABEL, ITEM_LABEL, ITEM_HINT, SETTING_LABEL
 } from './content.js';
 
-const store = new Store(new LocalAdapter());
+const { adapter, mode, sb } = await chooseAdapter();
+const store = new Store(adapter);
 
 /* ---------------------------------------------------------------- helpers */
 
@@ -1587,6 +1589,7 @@ $('btnBackup').onclick = openBackup;
    admin could keep running a session that was never reaching localStorage.
    Now it surfaces immediately. */
 store.onError = (message) => toast(message, true);
+mountStorageButton(mode, sb);
 
 await store.init();
 render();
