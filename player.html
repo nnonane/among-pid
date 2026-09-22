@@ -93,12 +93,15 @@ const esc = (s) => String(s).replace(/[&<>"]/g,
 async function load() {
   // 1. My own row. The database only ever returns this player's row,
   //    so the role on it is safe to display.
+    const { data: { user } } = await sb.auth.getUser();
+
   const { data: me, error: meErr } = await sb
     .from('players')
-    .select('id, display_name, role');
+    .select('id, display_name, role')
+    .eq('auth_user_id', user.id);
 
   if (meErr)      return fail('Could not load your role: ' + meErr.message);
-  if (!me.length) return fail('You are signed in, but not in the game yet.');
+    if (!me.length) return fail('You are signed in, but you are not a player in this game.');
 
   $('who').textContent  = me[0].display_name;
   $('role').textContent = 'You are the ' + me[0].role;
