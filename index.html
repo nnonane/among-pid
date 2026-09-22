@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<!-- mafia v0.2 | index.html | 22 Sep 2026 -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1366">
+<title>Among PID — Admin Console</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="title" id="brandTitle">Among PID</span>
+      <span class="sub" id="brandSub">Weekly Mafia</span>
+    </div>
+    <div class="round-chip"><span class="lbl">Week</span><span id="roundNum">—</span></div>
+    <div class="round-chip"><span class="lbl">Phase</span><span id="phaseName">—</span></div>
+    <div id="countdownChip" class="round-chip" hidden>
+      <span class="lbl">Rounds left</span><span id="countdownNum">—</span>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn sm ghost" id="btnSettings">Settings</button>
+    <button class="btn sm ghost" id="btnBackup">Backup</button>
+  </header>
+
+  <aside class="sidebar-left">
+    <p class="rail-heading">Session flow</p>
+    <ul class="phase-rail" id="phaseRail"></ul>
+    <div class="btn-row" style="margin-top:22px; flex-direction:column;">
+      <button class="btn block" id="btnBack">← Rewind phase</button>
+      <button class="btn primary block" id="btnNext">Advance phase →</button>
+    </div>
+    <p class="faint" style="margin-top:16px" id="railNote"></p>
+  </aside>
+
+  <main class="main" id="main"></main>
+
+  <aside class="sidebar-right">
+    <p class="sect-title">
+      <span>Roster</span>
+      <span id="rosterCount" class="faint"></span>
+    </p>
+    <ul class="roster" id="roster"></ul>
+
+    <p class="sect-title" style="margin-top:24px">Recent activity</p>
+    <ul class="feed" id="feed"></ul>
+  </aside>
+
+</div>
+
+<div id="toast"></div>
+<div id="modalHost"></div>
+
+<script type="module" src="./ui.js"></script>
+</body>
+</html>
