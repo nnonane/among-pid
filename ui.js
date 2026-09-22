@@ -1408,47 +1408,163 @@ function openSettings() {
   });
 }
 
+/* mafia v0.2.1 | replacement for openBackup() in ui.js | 22 Sep 2026
+   ------------------------------------------------------------------
+   HOW TO APPLY (GitHub web editor):
+     1. Open ui.js, click the pencil icon.
+     2. Ctrl+F for:   ====== BACKUP
+     3. Select from that banner line down to — but NOT including — the line:
+              /* ============================================================ BOOT ===== */
+     4. Paste everything below (starting at the BACKUP banner) over the top.
+     5. Commit.
+   The four lines under the BOOT banner must survive. They are what wires up
+   the buttons, and the app will not start without them.
+   ------------------------------------------------------------------ */
+
 /* ========================================================== BACKUP ===== */
 
 function openBackup() {
   openModal(`
-    <h2>Backup & restore</h2>
-    <div class="warnbox">This file contains real names alongside hidden roles.
+    <h2>Backup &amp; restore</h2>
+    <div class="warnbox">This file pairs real names with hidden roles.
       Save it to OneDrive — never commit it to the repository.</div>
-    <div class="btn-row">
-      <button class="btn primary" id="bDown">Download backup</button>
+
+    <h3>Back up</h3>
+    <div class="btn-row" style="margin-top:0">
+      <button class="btn primary" id="bDown">Download file</button>
       <button class="btn" id="bCopy">Copy to clipboard</button>
+      <button class="btn ghost" id="bShow">Show text</button>
     </div>
+    <div id="bOut"></div>
+
     <h3>Restore</h3>
-    <p class="faint">Paste a previous backup to replace the current game entirely.</p>
-    <textarea id="bPaste" rows="6" placeholder="Paste backup JSON here"></textarea>
-    <div class="btn-row"><button class="btn danger" id="bRestore">Restore from paste</button></div>`,
+    <p class="faint">Replaces the current game entirely. Back up first if in doubt.</p>
+    <div class="btn-row" style="margin-top:0">
+      <button class="btn" id="bPick">Choose a backup file…</button>
+      <input type="file" id="bFile" accept=".json,application/json" hidden>
+    </div>
+    <p class="faint" style="margin:10px 0 6px">Or paste the backup text:</p>
+    <textarea id="bPaste" rows="5" placeholder="Paste backup JSON here"></textarea>
+    <div class="btn-row"><button class="btn danger" id="bRestore">Restore</button></div>
+    <div id="bMsg"></div>`,
   (root, close) => {
-    root.querySelector('#bDown').onclick = () => {
-      const blob = new Blob([store.exportJson()], { type: 'application/json' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = store.backupFilename();
-      a.click();
-      URL.revokeObjectURL(a.href);
-      toast('Backup downloaded.');
+    const out = root.querySelector('#bOut');
+    const msg = root.querySelector('#bMsg');
+    const say = (html, bad) => {
+      msg.innerHTML = `<div class="${bad ? 'warnbox' : 'okbox'}">${html}</div>`;
     };
+
+    const showText = (reason) => {
+      out.innerHTML = `
+        ${reason ? `<div class="warnbox">${esc(reason)} Copy everything below and save it
+          as a .json file in OneDrive.</div>` : ''}
+        <textarea id="bDump" rows="6" readonly></textarea>`;
+      const ta = out.querySelector('#bDump');
+      ta.value = store.exportJson();
+      ta.focus();
+      ta.select();
+    };
+
+    // --- download --------------------------------------------------------
+    root.querySelector('#bDown').onclick = () => {
+      try {
+        const blob = new Blob([store.exportJson()], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = store.backupFilename();
+        a.rel = 'noopener';
+        // The anchor must be in the document for the click to register, and the
+        // object URL must outlive the click — revoking immediately cancels it.
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          if (a.parentNode) a.parentNode.removeChild(a);
+          URL.revokeObjectURL(url);
+        }, 4000);
+        out.innerHTML = `<div class="okbox">Saved as
+          <strong>${esc(store.backupFilename())}</strong> — check your Downloads folder,
+          then move it to OneDrive. Nothing there? Use <em>Show text</em> instead.</div>`;
+      } catch (err) {
+        showText('Downloads appear to be blocked in this browser.');
+      }
+    };
+
+    // --- clipboard -------------------------------------------------------
     root.querySelector('#bCopy').onclick = async () => {
       try {
         await navigator.clipboard.writeText(store.exportJson());
-        toast('Backup copied to the clipboard.');
-      } catch { toast('Clipboard blocked — use Download instead.', true); }
+        out.innerHTML = '<div class="okbox">Copied. Paste it into a .json file in OneDrive.</div>';
+      } catch {
+        showText('The clipboard is blocked here.');
+      }
     };
-    root.querySelector('#bRestore').onclick = async () => {
+
+    root.querySelector('#bShow').onclick = () => showText('');
+
+    // --- restore from a file --------------------------------------------
+    const fileInput = root.querySelector('#bFile');
+    root.querySelector('#bPick').onclick = () => fileInput.click();
+    fileInput.onchange = () => {
+      const f = fileInput.files && fileInput.files[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = () => doRestore(String(reader.result), f.name);
+      reader.onerror = () => say('Could not read that file.', true);
+      reader.readAsText(f);
+    };
+
+    // --- restore from pasted text ---------------------------------------
+    root.querySelector('#bRestore').onclick = () => {
       const text = root.querySelector('#bPaste').value.trim();
-      if (!text) return toast('Paste a backup first.', true);
-      if (!(await confirmAction('Replace the current game?',
-        'Everything currently stored is overwritten.'))) return;
-      try {
-        await store.importJson(text);
-        close(); render(); toast('Game restored.');
-      } catch (err) { toast('That is not a valid backup file.', true); }
+      if (!text) return say('Paste a backup, or choose a file above.', true);
+      doRestore(text, 'pasted text');
     };
+
+    /* Two-step inline confirm. A nested modal would wipe this one, which is
+       what broke the original restore path. */
+    let armed = null;
+    async function doRestore(text, source) {
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        return say('That is not valid JSON — check the whole file was copied.', true);
+      }
+      if (!parsed || !parsed.game || !Array.isArray(parsed.players)) {
+        return say('Readable, but not a Weekly Mafia backup.', true);
+      }
+
+      const when = parsed.game.createdAt
+        ? new Date(parsed.game.createdAt).toLocaleDateString() : 'unknown date';
+      const label = `week ${parsed.game.currentRound ?? '?'}, ${parsed.players.length} players`;
+
+      if (armed !== text) {
+        armed = text;
+        msg.innerHTML = `
+          <div class="warnbox">
+            Restore from <strong>${esc(source)}</strong> — ${esc(label)}, created ${esc(when)}.<br>
+            This replaces the current game.
+          </div>
+          <div class="btn-row">
+            <button class="btn danger" id="bYes">Yes, restore</button>
+            <button class="btn ghost" id="bNo">Cancel</button>
+          </div>`;
+        msg.querySelector('#bYes').onclick = () => doRestore(text, source);
+        msg.querySelector('#bNo').onclick = () => { armed = null; msg.innerHTML = ''; };
+        return;
+      }
+
+      try {
+        await store.importJson(parsed);
+        close();
+        render();
+        toast(`Restored — ${label}.`);
+      } catch (err) {
+        armed = null;
+        say('Restore failed: ' + esc(err.message), true);
+      }
+    }
   });
 }
 
