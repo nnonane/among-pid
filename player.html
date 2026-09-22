@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Among PID</title>
+<style>
+  body { margin:0; padding:24px; background:#0b1120; color:#e8edf7;
+         font:16px/1.5 "Segoe UI", system-ui, sans-serif; }
+  .wrap { max-width:420px; margin:40px auto; }
+  h1 { font-size:20px; letter-spacing:.08em; text-transform:uppercase;
+       margin:0 0 24px; text-align:center; }
+  .card { background:#16223c; border:1px solid #1e2c49;
+          border-radius:12px; padding:24px; }
+  label { display:block; font-size:11px; letter-spacing:.1em;
+          text-transform:uppercase; color:#64789c; margin:0 0 6px; }
+  input { background:#0b1120; border:1px solid #27395c; border-radius:8px;
+          padding:12px; width:100%; color:#e8edf7; font:inherit;
+          margin-bottom:16px; box-sizing:border-box; }
+  button { padding:13px; width:100%; border-radius:8px; border:none;
+           background:#d4a933; color:#241c05; font:inherit;
+           font-weight:700; cursor:pointer; }
+  button.ghost { background:#1d2c4c; color:#e8edf7; font-weight:400;
+                 margin-top:20px; }
+  .err { background:#3a1418; border-left:3px solid #d9534f; color:#ffc9c6;
+         padding:12px; border-radius:6px; margin-bottom:16px; font-size:14px; }
+  .name { color:#93a5c4; font-size:14px; }
+  .role { font-size:34px; font-weight:700; color:#d4a933;
+          margin:8px 0 0; letter-spacing:.02em; }
+  .hide { display:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Among PID</h1>
+
+  <div class="card" id="loginCard">
+    <div id="err"></div>
+    <label>Email</label>
+    <input id="email" type="email" autocomplete="username">
+    <label>Password</label>
+    <input id="pw" type="password" autocomplete="current-password">
+    <button id="go">Log in</button>
+  </div>
+
+  <div class="card hide" id="roleCard">
+    <div class="name" id="who"></div>
+    <div class="role" id="role"></div>
+    <button class="ghost" id="out">Log out</button>
+  </div>
+</div>
+
+<script type="module">
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+const URL = 'https://ashjitdpilxwcfhxamni.supabase.co';
+const KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFzaGppdGRwaWx4d2NmaHhhbW5pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwNDAxOTEsImV4cCI6MjEwNTYxNjE5MX0.wWTdrocCPlOWWN5CwTVi--OgWuVBEc99zWxWfVE_Gqk';
+
+const sb = createClient(URL, KEY);
+const $ = (id) => document.getElementById(id);
+
+async function showRole() {
+  const { data, error } = await sb
+    .from('players')
+    .select('display_name, role');
+
+  if (error)        return fail('Could not load your role: ' + error.message);
+  if (!data.length) return fail('You are signed in, but not in the game yet.');
+
+  $('who').textContent  = data[0].display_name;
+  $('role').textContent = 'You are the ' + data[0].role;
+  $('loginCard').classList.add('hide');
+  $('roleCard').classList.remove('hide');
+}
+
+function fail(msg) {
+  $('err').innerHTML = '<div class="err">' + msg + '</div>';
+}
+
+$('go').onclick = async () => {
+  $('err').innerHTML = '';
+  const { error } = await sb.auth.signInWithPassword({
+    email: $('email').value.trim(),
+    password: $('pw').value
+  });
+  if (error) return fail(error.message);
+  showRole();
+};
+
+$('out').onclick = async () => {
+  await sb.auth.signOut();
+  location.reload();
+};
+
+const { data: { session } } = await sb.auth.getSession();
+if (session) showRole();
+</script>
+</body>
+</html>
