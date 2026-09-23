@@ -1,5 +1,16 @@
 <!DOCTYPE html>
-<!-- mafia v0.3.1 | player.html | 22 Sep 2026 -->
+<!-- mafia v0.4 | player.html | 23 Sep 2026 -->
+<!--
+  THE PLAYER SCREEN.
+
+  Phase-aware. The admin console publishes which phase it is in; this page
+  reads that signal and shows the one thing the player can do right now:
+  an action, a purchase, a ballot, or nothing at all.
+
+  It never trusts itself. Every submission is re-checked by row level
+  security in the database, because this file runs on a laptop the player
+  controls and a determined one can open dev tools.
+-->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -8,30 +19,43 @@
 <style>
   body { margin:0; padding:24px; background:#0b1120; color:#e8edf7;
          font:16px/1.5 "Segoe UI", system-ui, sans-serif; }
-  .wrap { max-width:420px; margin:40px auto; }
+  .wrap { max-width:440px; margin:32px auto 64px; }
   h1 { font-size:20px; letter-spacing:.08em; text-transform:uppercase;
-       margin:0 0 24px; text-align:center; }
+       margin:0 0 6px; text-align:center; }
+  .week { text-align:center; color:#64789c; font-size:12px;
+          letter-spacing:.14em; text-transform:uppercase; margin:0 0 24px; }
   .card { background:#16223c; border:1px solid #1e2c49;
-          border-radius:12px; padding:24px; margin-bottom:16px; }
+          border-radius:12px; padding:22px; margin-bottom:16px; }
+  .card.act { border-left:3px solid #d4a933; }
+  .card.quiet { border-left:3px solid #27395c; }
+  .card.mafia { border-left:3px solid #d9534f; background:#1c1526; }
   label { display:block; font-size:11px; letter-spacing:.1em;
           text-transform:uppercase; color:#64789c; margin:0 0 6px; }
-  input { background:#0b1120; border:1px solid #27395c; border-radius:8px;
+  input, select { background:#0b1120; border:1px solid #27395c; border-radius:8px;
           padding:12px; width:100%; color:#e8edf7; font:inherit;
           margin-bottom:16px; box-sizing:border-box; }
   button { padding:13px; width:100%; border-radius:8px; border:none;
            background:#d4a933; color:#241c05; font:inherit;
            font-weight:700; cursor:pointer; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
   button.ghost { background:#1d2c4c; color:#e8edf7; font-weight:400;
                  margin-top:20px; }
+  button.small { padding:8px 12px; width:auto; font-size:13px; font-weight:600; }
   .err { background:#3a1418; border-left:3px solid #d9534f; color:#ffc9c6;
          padding:12px; border-radius:6px; margin-bottom:16px; font-size:14px; }
+  .ok { background:#12301f; border-left:3px solid #3fbf6f; color:#b8f0cc;
+        padding:12px; border-radius:6px; margin-bottom:16px; font-size:14px; }
+  .note { background:#2b1a10; border-left:3px solid #6a4420; color:#f0c894;
+          padding:12px; border-radius:6px; margin-bottom:16px; font-size:14px; }
   .name { color:#93a5c4; font-size:14px; }
   .role { font-size:34px; font-weight:700; color:#d4a933;
           margin:8px 0 0; letter-spacing:.02em; }
+  .role.isMafia { color:#ff8a86; }
   .hide { display:none; }
-
   h2 { font-size:11px; letter-spacing:.1em; text-transform:uppercase;
        color:#64789c; margin:0 0 14px; font-weight:600; }
+  h3 { font-size:16px; margin:0 0 6px; font-weight:650; }
+  p.hint { color:#93a5c4; font-size:13.5px; margin:0 0 16px; }
   .who { display:flex; align-items:center; gap:10px;
          padding:10px 0; border-bottom:1px solid #1e2c49; }
   .who:last-child { border-bottom:none; }
@@ -48,11 +72,23 @@
   .stat .v { font-size:22px; font-weight:700; }
   .stat .k { font-size:11px; letter-spacing:.08em;
              text-transform:uppercase; color:#64789c; }
+  .item { display:flex; justify-content:space-between; align-items:center;
+          gap:12px; padding:11px 0; border-bottom:1px solid #1e2c49; }
+  .item:last-child { border-bottom:none; }
+  .item .t { font-size:14px; font-weight:600; }
+  .item .d { font-size:12.5px; color:#64789c; }
+  .pill { display:inline-block; padding:2px 9px; border-radius:999px;
+          font-size:11px; font-weight:600; border:1px solid #27395c;
+          background:#1d2c4c; color:#93a5c4; }
+  .pill.on { color:#9ce6b8; border-color:#2d5f41; background:#12301f; }
+  .pill.wait { color:#d9c48a; border-color:#5d4c22; background:#2b2412; }
+  .foot { text-align:center; color:#3f4f6b; font-size:11.5px; margin-top:8px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Among PID</h1>
+  <div class="week" id="week"></div>
 
   <div class="card" id="loginCard">
     <div id="err"></div>
@@ -72,6 +108,10 @@
     </div>
   </div>
 
+  <div id="phaseCard"></div>
+  <div id="mafiaCard"></div>
+  <div id="inboxCard"></div>
+
   <div class="card hide" id="rosterCard">
     <h2>Who is playing</h2>
     <div id="roster"></div>
@@ -79,6 +119,7 @@
 
   <div class="hide" id="outWrap">
     <button class="ghost" id="out">Log out</button>
+    <div class="foot" id="foot"></div>
   </div>
 </div>
 
@@ -87,71 +128,453 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const URL = 'https://ashjitdpilxwcfhxamni.supabase.co';
 const KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFzaGppdGRwaWx4d2NmaHhhbW5pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwNDAxOTEsImV4cCI6MjEwNTYxNjE5MX0.wWTdrocCPlOWWN5CwTVi--OgWuVBEc99zWxWfVE_Gqk';
-
 const sb = createClient(URL, KEY);
-const $ = (id) => document.getElementById(id);
 
-const esc = (s) => String(s).replace(/[&<>"]/g,
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g,
   (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+
+/* --------------------------------------------------------------- text -- */
+
+const ROLE_LABEL = {
+  MAFIA: 'Mafia', DOCTOR: 'Doctor', SHERIFF: 'Sheriff', CIVILIAN: 'Civilian'
+};
+
+const ITEM_LABEL = {
+  TEMP_IMMUNITY: 'Temporary Immunity',
+  EXTRA_VOTE: 'Extra Vote',
+  DISCOUNTED_RESURRECTION: 'Discounted Resurrection',
+  ADDITIONAL_INVESTIGATION: 'Additional Investigation',
+  REVEAL_ALIGNMENT_ON_DEATH: 'Reveal Alignment on Death',
+  DOUBLE_SAVE: 'Double Save',
+  SELF_SAVE: 'Self Save',
+  BYPASS_DOCTOR_SAVE: 'Bypass Doctor Save',
+  VOTE_MANIPULATION: 'Vote Manipulation',
+  RECRUIT_NEW_MAFIA: 'Recruit New Mafia'
+};
+
+const ITEM_HINT = {
+  TEMP_IMMUNITY: 'Blocks the kill and the public vote next round.',
+  EXTRA_VOTE: 'Adds one weight to one ballot.',
+  DISCOUNTED_RESURRECTION: 'Kept through death. Lowers one resurrection to 2 points.',
+  ADDITIONAL_INVESTIGATION: 'A second investigation target for one round.',
+  REVEAL_ALIGNMENT_ON_DEATH: 'Permanent. Publishes alignment on death.',
+  DOUBLE_SAVE: 'Protect two different players for one round.',
+  SELF_SAVE: 'You may target yourself for one round.',
+  BYPASS_DOCTOR_SAVE: 'The kill ignores Doctor protection for one round.',
+  VOTE_MANIPULATION: 'One anonymous vote adjustment.',
+  RECRUIT_NEW_MAFIA: 'Convert a living non-Mafia. Blocked above three active Mafia.'
+};
+
+const STORE = {
+  CIVILIAN: ['TEMP_IMMUNITY', 'EXTRA_VOTE', 'DISCOUNTED_RESURRECTION'],
+  SHERIFF:  ['ADDITIONAL_INVESTIGATION', 'TEMP_IMMUNITY', 'REVEAL_ALIGNMENT_ON_DEATH'],
+  DOCTOR:   ['DOUBLE_SAVE', 'SELF_SAVE'],
+  MAFIA:    ['BYPASS_DOCTOR_SAVE', 'VOTE_MANIPULATION', 'RECRUIT_NEW_MAFIA']
+};
+
+const ACTION_FOR = {
+  MAFIA:   'MAFIA_KILL_VOTE',
+  DOCTOR:  'DOCTOR_SAVE',
+  SHERIFF: 'SHERIFF_INVESTIGATE'
+};
+
+/* Copy shown while there is nothing to submit. Deliberately tells the
+   player what is happening in the room so they do not think it is broken. */
+const IDLE = {
+  CLOSED:      ['Nothing is running', 'The session is closed. Your role, tokens and items are all safe until Hunter opens the next week.'],
+  ATTENDANCE:  ['Session starting', 'Hunter is marking who is here. Hold tight.'],
+  MINIGAME:    ['Minigame', 'Play the game. Winners take a Reward Token.'],
+  RESOLUTION:  ['Resolving', 'The night is being resolved. Watch the call.'],
+  MASTER:      ['Master intervention', 'Nothing for you to do right now.'],
+  DISCUSSION:  ['Discussion', 'Accuse, defend, bluff. The vote is next.'],
+  RESULTS:     ['Results', 'The vote is in.'],
+  FINISHED:    ['Game over', 'That is the end of this game.']
+};
+
+/* -------------------------------------------------------------- state -- */
+
+let me = null;       // my player row
+let phase = null;    // { phase, current_round, public_text, winner }
+let roster = [];
+let myAction = null;
+let myBallot = null;
+let myPurchases = [];
+let busy = false;
+let timer = null;
+
+const alive = () => me && me.life_status === 'ALIVE' && me.attendance_status === 'PRESENT';
+const round = () => phase?.current_round ?? 0;
+
+/** Items I hold that are usable this week. */
+const owns = (type) => (me?.inventory || []).some(
+  (i) => i.rewardType === type
+    && (i.status === 'OWNED' || i.status === 'STAGED')
+    && (i.eligibleFromRound == null || i.eligibleFromRound <= round())
+);
+
+/* --------------------------------------------------------------- load -- */
 
 async function load() {
   const { data: { user } } = await sb.auth.getUser();
+  if (!user) return;
 
-  // Claim a seat if one is waiting for this email address. Safe to call every
-  // time: it does nothing once a seat is already linked, and it can only ever
-  // link the seat the admin set aside for this exact address.
+  // Safe to call every time: it does nothing once a seat is linked, and it
+  // can only ever link the seat the admin set aside for this exact address.
   await sb.rpc('claim_my_seat');
 
-  // My own row. The database only ever returns this player's row, so the role
-  // on it is safe to display.
-  const { data: me, error: meErr } = await sb
+  const { data: rows, error } = await sb
     .from('players')
-    .select('id, display_name, role, reward_tokens, spirit_points')
+    .select('id, display_name, role, alignment, life_status, attendance_status, reward_tokens, spirit_points, inventory, flags')
     .eq('auth_user_id', user.id);
 
-  if (meErr) return fail('Could not load your role: ' + meErr.message);
-  if (!me.length) {
-    return fail('You are signed in, but no seat is linked to this email yet. ' +
-                'Ask Hunter to add it to your player.');
+  if (error) return fail('Could not load your role: ' + error.message);
+  if (!rows.length) {
+    return fail('You are signed in, but no seat is linked to this email yet. '
+              + 'Ask Hunter to add it to your player.');
   }
-
-  $('who').textContent  = me[0].display_name;
-  $('role').textContent = 'You are the ' + me[0].role;
-  $('tok').textContent  = me[0].reward_tokens ?? 0;
-  $('spi').textContent  = me[0].spirit_points ?? 0;
-  $('stats').classList.remove('hide');
-
-  // The roster. A separate, deliberately safe list: names and alive status
-  // only. It has no role column to leak.
-  const { data: roster, error: rErr } = await sb
-    .from('roster')
-    .select('id, display_name, life_status')
-    .order('display_name');
-
-  if (rErr) {
-    $('roster').innerHTML = '<div class="status">Could not load the roster: '
-      + esc(rErr.message) + '</div>';
-  } else {
-    $('roster').innerHTML = roster.map((p) => {
-      const out = p.life_status !== 'ALIVE';
-      return '<div class="who' + (out ? ' out' : '') + '">'
-        + '<span class="dot"></span>'
-        + '<span class="n">' + esc(p.display_name) + '</span>'
-        + (p.id === me[0].id ? '<span class="you">You</span>' : '')
-        + (out ? '<span class="status">Out</span>' : '')
-        + '</div>';
-    }).join('');
-  }
+  me = rows[0];
 
   $('loginCard').classList.add('hide');
   $('roleCard').classList.remove('hide');
   $('rosterCard').classList.remove('hide');
   $('outWrap').classList.remove('hide');
+
+  await refresh();
+  if (!timer) timer = setInterval(refresh, 6000);
+}
+
+/** Re-reads everything that can change while the player is sitting there. */
+async function refresh() {
+  if (busy) return;
+
+  const [meRes, phaseRes, rosterRes] = await Promise.all([
+    sb.from('players')
+      .select('id, display_name, role, alignment, life_status, attendance_status, reward_tokens, spirit_points, inventory, flags')
+      .eq('id', me.id).maybeSingle(),
+    sb.from('game_phase').select('*').maybeSingle(),
+    sb.from('roster').select('id, display_name, life_status').order('display_name')
+  ]);
+
+  if (meRes.data) me = meRes.data;
+  phase = phaseRes.data ?? { phase: 'CLOSED', current_round: 0, public_text: '', winner: '' };
+  roster = rosterRes.data ?? [];
+
+  const r = round();
+  const [aRes, bRes, pRes] = await Promise.all([
+    sb.from('actions').select('*').eq('round', r).maybeSingle(),
+    sb.from('ballots').select('*').eq('round', r).maybeSingle(),
+    sb.from('purchases').select('*').eq('round', r).order('created_at')
+  ]);
+  myAction = aRes.data ?? null;
+  myBallot = bRes.data ?? null;
+  myPurchases = pRes.data ?? [];
+
+  paint();
+  paintInbox();
+}
+
+/* -------------------------------------------------------------- paint -- */
+
+function paint() {
+  $('week').textContent = round() ? `Week ${round()}` : 'Not started';
+  $('who').textContent = me.display_name;
+
+  const isMafia = me.role === 'MAFIA';
+  const spirit = me.life_status !== 'ALIVE';
+  $('role').textContent = spirit ? 'You are a Spirit' : 'You are the ' + (ROLE_LABEL[me.role] ?? me.role);
+  $('role').className = 'role' + (isMafia && !spirit ? ' isMafia' : '');
+  $('tok').textContent = me.reward_tokens ?? 0;
+  $('spi').textContent = me.spirit_points ?? 0;
+  $('stats').classList.remove('hide');
+
+  paintPhase();
+  paintMafia();
+  paintRoster();
+  $('foot').textContent = 'Updates automatically. Last checked '
+    + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function paintPhase() {
+  const host = $('phaseCard');
+  const p = phase.phase;
+
+  if (p === 'FINISHED') {
+    return void (host.innerHTML = card('quiet',
+      `<h3>Game over</h3><p class="hint">${phase.winner === 'GOOD'
+        ? 'The town wins.' : 'The Mafia win.'}</p>`));
+  }
+
+  if (p === 'HIDDEN_ACTIONS')  return paintAction(host);
+  if (p === 'REWARDS')         return paintShop(host);
+  if (p === 'VOTING')          return paintVote(host);
+
+  const [title, text] = IDLE[p] ?? ['Standing by', 'Nothing to submit right now.'];
+  host.innerHTML = card('quiet',
+    `<h3>${esc(title)}</h3><p class="hint">${esc(text)}</p>`
+    + (phase.public_text ? `<div class="note">${esc(phase.public_text)}</div>` : ''));
+}
+
+/* --------------------------------------------------- hidden actions --- */
+
+function paintAction(host) {
+  const type = ACTION_FOR[me.role];
+
+  if (!type) {
+    return void (host.innerHTML = card('quiet',
+      `<h3>Hidden actions</h3>
+       <p class="hint">Civilians have no night action. Sit tight &mdash; the minigame is next.</p>`));
+  }
+  if (!alive()) {
+    return void (host.innerHTML = card('quiet',
+      `<h3>Hidden actions</h3>
+       <p class="hint">You cannot act this week.</p>`));
+  }
+
+  const label = {
+    MAFIA_KILL_VOTE:     ['Choose your kill target',
+      'Every active Mafia picks one. Majority decides; a tie is broken at random.'],
+    DOCTOR_SAVE:         ['Choose who to protect',
+      'Blocks the Mafia kill unless a Bypass is in play.'],
+    SHERIFF_INVESTIGATE: ['Choose who to investigate',
+      'Innocent is always truthful. Suspicious proves nothing.']
+  }[type];
+
+  // Self-targeting: only the Doctor, and only holding Self Save.
+  const allowSelf = me.role === 'DOCTOR' && owns('SELF_SAVE');
+  const second =
+    (me.role === 'DOCTOR'  && owns('DOUBLE_SAVE'))            ? 'Second player to protect' :
+    (me.role === 'SHERIFF' && owns('ADDITIONAL_INVESTIGATION')) ? 'Second player to investigate' : null;
+
+  const pool = roster.filter((r) => r.life_status === 'ALIVE'
+    && (allowSelf || r.id !== me.id));
+
+  const done = !!myAction;
+  host.innerHTML = card('act', `
+    <h3>${esc(label[0])}</h3>
+    <p class="hint">${esc(label[1])}</p>
+    ${done ? '<div class="ok">Submitted. You can change it until Hunter moves on.</div>' : ''}
+    <label>Target</label>
+    <select id="aT">${optionList(pool, myAction?.target_id)}</select>
+    ${second ? `<label>${esc(second)}</label>
+       <select id="aT2">${optionList(pool, myAction?.secondary_target_id)}</select>` : ''}
+    <button id="aGo">${done ? 'Update my choice' : 'Submit'}</button>
+    <div id="aMsg"></div>`);
+
+  $('aGo').onclick = () => submitAction(type);
+}
+
+async function submitAction(type) {
+  const target = $('aT').value;
+  const second = $('aT2') ? $('aT2').value : null;
+  if (!target) return say('aMsg', 'Pick someone first.', true);
+
+  busy = true;
+  const { error } = await sb.from('actions').upsert({
+    round: round(),
+    actor_id: me.id,
+    type,
+    target_id: target,
+    secondary_target_id: second || null
+  }, { onConflict: 'round,actor_id' });
+  busy = false;
+
+  if (error) return say('aMsg', explain(error.message), true);
+  say('aMsg', 'Locked in.', false);
+  refresh();
+}
+
+/* ------------------------------------------------------------- shop --- */
+
+function paintShop(host) {
+  const tokens = me.reward_tokens ?? 0;
+  const pending = myPurchases.filter((p) => p.status === 'PENDING');
+  const decided = myPurchases.filter((p) => p.status !== 'PENDING');
+  const store = STORE[me.role] ?? [];
+
+  if (!alive()) {
+    return void (host.innerHTML = card('quiet',
+      `<h3>Tokens</h3>
+       <p class="hint">Spirits cannot buy rewards. Attend each week to build Spirit Points
+        toward coming back.</p>`));
+  }
+
+  host.innerHTML = card('act', `
+    <h3>Spend your tokens</h3>
+    <p class="hint">Every reward costs one token. Requests are private &mdash;
+      Hunter confirms them and only then is the token taken.</p>
+    ${tokens ? '' : '<div class="note">You have no tokens to spend this week.</div>'}
+    ${pending.length ? `<div class="ok">${pending.length} request${pending.length > 1 ? 's' : ''}
+      waiting on Hunter.</div>` : ''}
+    <div id="shopList">
+      ${store.map((item) => {
+        const queued = pending.some((p) => p.reward_type === item);
+        const canBuy = tokens > pending.length && !queued;
+        return `<div class="item">
+          <div>
+            <div class="t">${esc(ITEM_LABEL[item])}</div>
+            <div class="d">${esc(ITEM_HINT[item])}</div>
+          </div>
+          ${queued
+            ? '<span class="pill wait">Requested</span>'
+            : `<button class="small" data-buy="${item}" ${canBuy ? '' : 'disabled'}>Buy</button>`}
+        </div>`;
+      }).join('')}
+    </div>
+    ${decided.length ? `<div style="margin-top:16px">${decided.map((p) =>
+      `<div class="item"><div class="t">${esc(ITEM_LABEL[p.reward_type] ?? p.reward_type)}</div>
+       <span class="pill ${p.status === 'ACCEPTED' ? 'on' : ''}">${esc(p.status)}</span></div>`
+      ).join('')}</div>` : ''}
+    <div id="sMsg"></div>`);
+
+  host.querySelectorAll('[data-buy]').forEach((btn) => {
+    btn.onclick = () => requestPurchase(btn.dataset.buy);
+  });
+}
+
+async function requestPurchase(rewardType) {
+  busy = true;
+  const { error } = await sb.from('purchases').insert({
+    round: round(),
+    player_id: me.id,
+    reward_type: rewardType,
+    status: 'PENDING'
+  });
+  busy = false;
+
+  if (error) return say('sMsg', explain(error.message), true);
+  say('sMsg', 'Requested privately. Hunter will confirm it.', false);
+  refresh();
+}
+
+/* ------------------------------------------------------------- vote --- */
+
+function paintVote(host) {
+  if (!alive()) {
+    return void (host.innerHTML = card('quiet',
+      `<h3>The vote</h3>
+       <p class="hint">Spirits and Dormant players do not vote.</p>`));
+  }
+
+  const pool = roster.filter((r) => r.life_status === 'ALIVE');
+  const done = !!myBallot;
+
+  host.innerHTML = card('act', `
+    <h3>Who do you vote for?</h3>
+    <p class="hint">Completely anonymous. Nobody &mdash; not even the other players &mdash;
+      can see who you picked. Only the totals are read out.</p>
+    ${done ? '<div class="ok">Ballot cast. You can change it until voting closes.</div>' : ''}
+    <label>Your vote</label>
+    <select id="vT">${optionList(pool, myBallot?.target_id)}</select>
+    <button id="vGo">${done ? 'Change my vote' : 'Cast my vote'}</button>
+    <div id="vMsg"></div>`);
+
+  $('vGo').onclick = castVote;
+}
+
+async function castVote() {
+  const target = $('vT').value;
+  if (!target) return say('vMsg', 'Pick someone first.', true);
+
+  busy = true;
+  const { error } = await sb.from('ballots').upsert({
+    round: round(),
+    voter_id: me.id,
+    target_id: target
+  }, { onConflict: 'round,voter_id' });
+  busy = false;
+
+  if (error) return say('vMsg', explain(error.message), true);
+  say('vMsg', 'Vote recorded.', false);
+  refresh();
+}
+
+/* ------------------------------------------------------ side panels --- */
+
+function paintMafia() {
+  const host = $('mafiaCard');
+  if (me.role !== 'MAFIA' || me.life_status !== 'ALIVE') return void (host.innerHTML = '');
+
+  sb.from('mafia_peers').select('id, display_name, life_status').then(({ data }) => {
+    const peers = (data ?? []).filter((p) => p.id !== me.id);
+    host.innerHTML = card('mafia', `
+      <h2>Your Mafia</h2>
+      ${peers.length
+        ? peers.map((p) => `<div class="who${p.life_status === 'ALIVE' ? '' : ' out'}">
+            <span class="dot"></span><span class="n">${esc(p.display_name)}</span>
+            ${p.life_status === 'ALIVE' ? '' : '<span class="status">Out</span>'}
+          </div>`).join('')
+        : '<p class="hint">You are the only Mafia left.</p>'}`);
+  });
+}
+
+/** Sheriff findings and anything else addressed only to this player. */
+function paintInbox() {
+  const host = $('inboxCard');
+  sb.from('private_events')
+    .select('round, type, body, created_at')
+    .order('created_at', { ascending: false })
+    .limit(8)
+    .then(({ data }) => {
+      const rows = data ?? [];
+      if (!rows.length) return void (host.innerHTML = '');
+      host.innerHTML = card('quiet', `
+        <h2>For your eyes only</h2>
+        ${rows.map((e) => `<div class="item">
+          <div><div class="t">${esc(e.body)}</div>
+          <div class="d">Week ${e.round}</div></div>
+        </div>`).join('')}`);
+    });
+}
+
+function paintRoster() {
+  $('roster').innerHTML = roster.map((p) => {
+    const out = p.life_status !== 'ALIVE';
+    return `<div class="who${out ? ' out' : ''}">
+      <span class="dot"></span>
+      <span class="n">${esc(p.display_name)}</span>
+      ${p.id === me.id ? '<span class="you">You</span>' : ''}
+      ${out ? '<span class="status">Out</span>' : ''}
+    </div>`;
+  }).join('');
+}
+
+/* ------------------------------------------------------------ utils --- */
+
+const card = (cls, inner) => `<div class="card ${cls}">${inner}</div>`;
+
+function optionList(pool, selected) {
+  return '<option value="">— choose —</option>' + pool.map((p) =>
+    `<option value="${esc(p.id)}"${selected === p.id ? ' selected' : ''}>${esc(p.display_name)}</option>`
+  ).join('');
+}
+
+function say(id, msg, bad) {
+  const n = $(id);
+  if (n) n.innerHTML = `<div class="${bad ? 'err' : 'ok'}" style="margin:14px 0 0">${esc(msg)}</div>`;
 }
 
 function fail(msg) {
-  $('err').innerHTML = '<div class="err">' + esc(msg) + '</div>';
+  $('err').innerHTML = `<div class="err">${esc(msg)}</div>`;
 }
+
+/*
+  A rejected policy comes back as a wall of Postgres. Players do not need to
+  read that; they need to know whether they did something wrong or simply
+  acted at the wrong moment.
+*/
+function explain(message) {
+  if (/row-level security|violates row-level/i.test(message)) {
+    return 'That was not accepted — the phase has probably moved on, or you are '
+         + 'not eligible this week. Refresh and check the screen above.';
+  }
+  if (/duplicate key/i.test(message)) {
+    return 'You already have a request in for that. Wait for Hunter to confirm it.';
+  }
+  return message;
+}
+
+/* ------------------------------------------------------------- boot --- */
 
 $('go').onclick = async () => {
   $('err').innerHTML = '';
@@ -163,7 +586,10 @@ $('go').onclick = async () => {
   load();
 };
 
+$('pw').onkeydown = (e) => { if (e.key === 'Enter') $('go').click(); };
+
 $('out').onclick = async () => {
+  clearInterval(timer);
   await sb.auth.signOut();
   location.reload();
 };

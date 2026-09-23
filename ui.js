@@ -1,12 +1,24 @@
-/* mafia v0.2.3 | ui.js | 22 Sep 2026 */
+/* mafia v0.4 | ui.js | 23 Sep 2026 */
 /*
   Rendering and admin controls. Talks to store.js and engine.js only.
   Contains NO game rules — anything that decides an outcome lives in engine.js.
+
+  v0.4 adds live player submissions. The console now READS what players
+  submitted from player.html instead of only taking dictation. Three things
+  are deliberately unchanged:
+
+    1. engine.js. Submissions are folded into currentActions and
+       currentBallots in exactly the shape it already consumed.
+    2. The manual path. Every dropdown still works, for the player whose
+       laptop died, and an admin edit always outranks a later sync.
+    3. Offline mode. With no cloud there is no sync, and the console runs
+       precisely as it did in v0.2.3.
 */
 
 import * as E from './engine.js';
 import { Store, LocalAdapter, newPlayer, newInventoryItem } from './store.js';
 import { chooseAdapter, mountStorageButton } from './cloud.js';
+import { Live, SOURCE, mergeActions, mergeBallots } from './live.js';
 import {
   GAME_TITLE, GAME_SUBTITLE, MINIGAMES,
   PHASE_LABEL, PHASE_HINT, ROLE_LABEL, ITEM_LABEL, ITEM_HINT, SETTING_LABEL
@@ -14,6 +26,16 @@ import {
 
 const { adapter, mode, sb } = await chooseAdapter();
 const store = new Store(adapter);
+
+/* Null in offline mode. Every call site checks. */
+const live = mode === 'cloud' && sb ? new Live(sb) : null;
+
+/* Pending purchase requests for the current week, refreshed by pollNow(). */
+let pendingPurchases = [];
+
+/* One poll timer for the whole app, cleared at the top of every render so a
+   phase change can never leave two of them running. */
+let pollTimer = null;
 
 /* ---------------------------------------------------------------- helpers */
 
@@ -89,6 +111,106 @@ async function commit(mutator, audit) {
   render();
 }
 
+/* ==================================================== LIVE SUBMISSIONS == */
+/*
+  The console polls rather than subscribing. Polling is boring, survives a
+  dropped socket without anyone noticing, and five seconds is far faster than
+  anyone can type. A realtime channel would be neater and would also need a
+  reconnect story on a night when the wifi is unreliable.
+*/
+
+/**
+ * Pulls this week's submissions and folds them into state.
+ * Returns true only if something actually changed, so an admin halfway
+ * through a dropdown is not interrupted by a pointless re-render.
+ */
+async function pollNow({ silent = true } = {}) {
+  if (!live) return false;
+  const round = S().game.currentRound;
+  if (!round) return false;
+
+  const phase = S().game.status;
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  let changed = false;
+
+  if (phase === E.PHASE.HIDDEN_ACTIONS) {
+    const merged = mergeActions(S().currentActions || [], await live.fetchActions(round));
+    if (!same(merged, S().currentActions || [])) {
+      await store.commit((d) => { d.currentActions = merged; });
+      changed = true;
+    }
+  }
+
+  if (phase === E.PHASE.VOTING) {
+    const merged = mergeBallots(S().currentBallots || [], await live.fetchBallots(round));
+    if (!same(merged, S().currentBallots || [])) {
+      await store.commit((d) => { d.currentBallots = merged; });
+      changed = true;
+    }
+  }
+
+  if (phase === E.PHASE.REWARDS) {
+    const next = await live.fetchPendingPurchases(round);
+    if (!same(next, pendingPurchases)) {
+      pendingPurchases = next;
+      changed = true;
+    }
+  }
+
+  if (live.lastError && !silent) toast('Sync problem: ' + live.lastError, true);
+  return changed;
+}
+
+/** Only the three phases that have anything to collect are polled. */
+function startPolling() {
+  clearInterval(pollTimer);
+  pollTimer = null;
+  if (!live) return;
+  const collecting = [E.PHASE.HIDDEN_ACTIONS, E.PHASE.VOTING, E.PHASE.REWARDS];
+  if (!collecting.includes(S().game.status)) return;
+  pollTimer = setInterval(async () => {
+    if (await pollNow()) render();
+  }, 5000);
+}
+
+/**
+ * The waiting-on banner. This is the thing that actually saves time on the
+ * night: it names who has not submitted, so nobody has to ask the room
+ * "has everyone done theirs?" and give away that someone is missing.
+ */
+function liveBanner(expected, haveIds, noun) {
+  const wrap = el('div', 'card');
+
+  if (!live) {
+    wrap.innerHTML = `
+      <h2>Player submissions</h2>
+      <div class="warnbox">Offline mode — players cannot submit anything.
+        Enter every ${esc(noun)} by hand below.</div>`;
+    return wrap;
+  }
+
+  const waiting = expected.filter((p) => !haveIds.has(p.id));
+  wrap.innerHTML = `
+    <h2>Player submissions
+      <span class="badge ${waiting.length ? 'dormant' : 'alive'}">${expected.length - waiting.length} of ${expected.length}</span>
+    </h2>
+    <p class="hint">Refreshing automatically every few seconds.</p>
+    ${waiting.length
+      ? `<div class="warnbox">Waiting on ${waiting.map((p) => esc(p.displayName)).join(', ')}.
+          Chase them, or enter the ${esc(noun)} yourself below — anything you set by hand
+          outranks a later submission.</div>`
+      : '<div class="okbox">Everyone is in.</div>'}
+    <div class="btn-row" style="margin-top:0">
+      <button class="btn sm" id="syncNow">Refresh now</button>
+    </div>`;
+
+  wrap.querySelector('#syncNow').onclick = async () => {
+    await pollNow({ silent: false });
+    render();
+  };
+  return wrap;
+}
+
 /* ------------------------------------------------------------- selectors */
 
 const living = () => S().players.filter(E.isAlive);
@@ -109,6 +231,17 @@ const ownsUsable = (p, type) =>
       i.rewardType === type && i.status === 'OWNED' &&
       (i.eligibleFromRound == null || i.eligibleFromRound <= S().game.currentRound)
   );
+
+/**
+ * Distinguishes a submission the player made themselves from one the admin
+ * typed in. Worth showing: if a row says Admin when you did not touch it,
+ * something has gone wrong and you want to know before you resolve.
+ */
+function sourceLabel(entry, doneWord = 'Submitted') {
+  if (!entry || (!entry.targetId && doneWord === 'Submitted')) return 'Waiting';
+  if (!entry) return 'Waiting';
+  return entry.source === SOURCE.ADMIN ? 'Admin entry' : doneWord;
+}
 
 function playerOption(p, selected) {
   return `<option value="${p.id}"${selected === p.id ? ' selected' : ''}>${esc(p.displayName)}</option>`;
@@ -207,6 +340,7 @@ function renderFeed() {
 
 function render() {
   renderChrome();
+  startPolling();
   const main = $('main');
   main.innerHTML = '';
   const g = S().game;
@@ -442,9 +576,16 @@ function viewHiddenActions(main) {
   intro.innerHTML = `
     <h2>Collect hidden actions</h2>
     <p class="hint">${esc(PHASE_HINT.HIDDEN_ACTIONS)}</p>
-    <div class="warnbox">Take each action privately — a whisper, a DM or a turned screen.
-      Nothing here is announced until resolution.</div>`;
+    <div class="warnbox">Players with a role submit from their own screen. Anything below
+      is a fallback — use it for anyone who cannot log in, and take it privately.</div>`;
   main.appendChild(intro);
+
+  // Who is expected to submit something tonight.
+  const actors = present().filter((p) =>
+    [E.ROLE.MAFIA, E.ROLE.DOCTOR, E.ROLE.SHERIFF].includes(p.role));
+  const haveActions = new Set(
+    (S().currentActions || []).filter((a) => a.targetId).map((a) => a.actorId));
+  main.appendChild(liveBanner(actors, haveActions, 'action'));
 
   // --- Mafia -------------------------------------------------------------
   const mafia = present().filter((p) => p.role === E.ROLE.MAFIA);
@@ -461,7 +602,7 @@ function viewHiddenActions(main) {
       row.innerHTML = `
         <div class="who">${esc(m.displayName)}<small>Mafia</small></div>
         ${targetSelect('t', cur?.targetId, { exclude: [m.id], blank: '— no ballot —' })}
-        <span class="badge ${cur?.targetId ? 'alive' : 'out'}">${cur?.targetId ? 'Submitted' : 'Waiting'}</span>`;
+        <span class="badge ${cur?.targetId ? 'alive' : 'out'}">${sourceLabel(cur)}</span>`;
       row.querySelector('select').onchange = (e) =>
         setAction(m.id, E.ACTION.MAFIA_KILL_VOTE, e.target.value);
       grid.appendChild(row);
@@ -500,7 +641,7 @@ function viewHiddenActions(main) {
       row.innerHTML = `
         <div class="who">${esc(doc.displayName)}<small>Doctor</small></div>
         ${targetSelect('t', cur?.targetId, { exclude: selfOk ? [] : [doc.id], blank: '— no save —' })}
-        <span class="badge ${cur?.targetId ? 'alive' : 'out'}">${cur?.targetId ? 'Submitted' : 'Waiting'}</span>`;
+        <span class="badge ${cur?.targetId ? 'alive' : 'out'}">${sourceLabel(cur)}</span>`;
       row.querySelector('select').onchange = (e) =>
         setAction(doc.id, E.ACTION.DOCTOR_SAVE, e.target.value);
       dCard.appendChild(row);
@@ -536,7 +677,7 @@ function viewHiddenActions(main) {
       row.innerHTML = `
         <div class="who">${esc(sh.displayName)}<small>Sheriff</small></div>
         ${targetSelect('t', cur?.targetId, { exclude: [sh.id], blank: '— no investigation —' })}
-        <span class="badge ${cur?.targetId ? 'alive' : 'out'}">${cur?.targetId ? 'Submitted' : 'Waiting'}</span>`;
+        <span class="badge ${cur?.targetId ? 'alive' : 'out'}">${sourceLabel(cur)}</span>`;
       row.querySelector('select').onchange = (e) =>
         setAction(sh.id, E.ACTION.SHERIFF_INVESTIGATE, e.target.value);
       sCard.appendChild(row);
@@ -592,6 +733,12 @@ async function toggleStage(playerId, itemType, on) {
   });
 }
 
+/*
+  Anything the admin sets by hand is stamped ADMIN, and mergeActions() will
+  not overwrite it. That matters for the very common case of correcting a
+  misheard action over the phone: without the stamp, the player's own stale
+  submission would silently undo the correction five seconds later.
+*/
 async function setAction(actorId, type, targetId, secondaryTargetId) {
   await commit((d) => {
     const list = (d.currentActions || []).filter((a) => a.actorId !== actorId);
@@ -600,7 +747,8 @@ async function setAction(actorId, type, targetId, secondaryTargetId) {
         actorId, type,
         targetId: targetId || null,
         secondaryTargetId: secondaryTargetId || null,
-        submittedAt: new Date().toISOString()
+        submittedAt: new Date().toISOString(),
+        source: SOURCE.ADMIN
       });
     }
     d.currentActions = list;
@@ -755,6 +903,82 @@ function viewRewards(main) {
     hint.textContent = i ? ITEM_HINT[i] : '';
   };
   buy.querySelector('#buyGo').onclick = () => purchase(who.value, what.value);
+
+  purchaseQueue(main);
+}
+
+/*
+  Requests players made from their own screen.
+
+  A request is not a purchase. The design overview is explicit that a token is
+  removed only after a valid purchase is accepted, so acceptance runs through
+  the same engine.canPurchase and the same purchase() path as anything typed
+  in above. That also keeps the console the single writer of tokens and
+  inventory, which is what stops an admin save from trampling a purchase made
+  while that save was in flight.
+*/
+function purchaseQueue(main) {
+  if (!live) return;
+
+  const card = el('div', 'card private');
+  card.innerHTML = `
+    <h2>Purchase requests
+      ${pendingPurchases.length
+        ? `<span class="badge dormant">${pendingPurchases.length} waiting</span>` : ''}</h2>
+    <p class="hint">Sent privately from each player's screen. Nothing is charged until you
+      accept, and the same rules are checked either way.</p>`;
+
+  if (!pendingPurchases.length) {
+    card.appendChild(el('p', 'empty', 'No requests waiting.'));
+    main.appendChild(card);
+    return;
+  }
+
+  const table = el('table', '', `<thead><tr>
+    <th>Player</th><th>Reward</th><th class="num">Tokens</th><th style="width:180px"></th>
+  </tr></thead><tbody></tbody>`);
+  const tb = table.querySelector('tbody');
+
+  for (const req of pendingPurchases) {
+    const p = byId(req.playerId);
+    const check = p
+      ? E.canPurchase(p, req.rewardType, S().players, settings())
+      : { ok: false, reason: 'No longer on the roster' };
+
+    const tr = el('tr');
+    tr.innerHTML = `
+      <td>${esc(p ? p.displayName : 'Unknown')}</td>
+      <td>${esc(ITEM_LABEL[req.rewardType] ?? req.rewardType)}
+        ${check.ok ? '' : `<br><span class="faint">${esc(check.reason)}</span>`}</td>
+      <td class="num tokens">${p ? p.rewardTokens : 0}</td>
+      <td>
+        <button class="btn sm ${check.ok ? 'primary' : ''}" ${check.ok ? '' : 'disabled'} data-yes>Accept</button>
+        <button class="btn sm ghost" data-no>Reject</button>
+      </td>`;
+
+    tr.querySelector('[data-yes]').onclick = async () => {
+      await purchase(req.playerId, req.rewardType);
+      await live.decidePurchase(req.id, 'ACCEPTED');
+      pendingPurchases = pendingPurchases.filter((x) => x.id !== req.id);
+      render();
+    };
+
+    tr.querySelector('[data-no]').onclick = async () => {
+      await live.decidePurchase(req.id, 'REJECTED',
+        check.ok ? 'Declined by admin' : check.reason);
+      pendingPurchases = pendingPurchases.filter((x) => x.id !== req.id);
+      await commit(() => {}, {
+        eventType: 'PURCHASE_REJECTED',
+        actorId: req.playerId,
+        summary: `${p ? p.displayName : 'Unknown'} was refused ${ITEM_LABEL[req.rewardType] ?? req.rewardType}`
+      });
+    };
+
+    tb.appendChild(tr);
+  }
+
+  card.appendChild(table);
+  main.appendChild(card);
 }
 
 async function purchase(playerId, itemType) {
@@ -902,6 +1126,16 @@ async function publishResolution(res) {
     trackDiff: true
   });
 
+  /* Deliver the Sheriff's finding to the Sheriff's own screen. It is still
+     shown in the preview above, so if this write fails the result is not
+     lost — you just read it out privately the old way. */
+  if (live && res.privateEvents?.length) {
+    const sent = await live.pushPrivateEvents(S().game.currentRound, res.privateEvents);
+    if (!sent.ok) {
+      toast('Private results could not be delivered online — read them out instead.', true);
+    }
+  }
+
   // Legacy may fire if that death removed the last Mafia.
   await runLegacyAndEndgame();
 
@@ -1027,8 +1261,12 @@ function viewVoting(main) {
   card.innerHTML = `
     <h2>Anonymous ballots</h2>
     <p class="hint">${esc(PHASE_HINT.VOTING)}</p>
-    <div class="warnbox">Collect ballots privately. Totals are public; who voted for whom never is.</div>
+    <div class="warnbox">Players vote from their own screen. Totals are public;
+      who voted for whom never is — not to you in a readable list, and not to them.</div>
     <div class="action-grid" id="vGrid"></div>`;
+
+  const haveBallots = new Set(ballots.map((b) => b.voterId));
+  main.appendChild(liveBanner(voters, haveBallots, 'ballot'));
   main.appendChild(card);
 
   const grid = card.querySelector('#vGrid');
@@ -1041,7 +1279,7 @@ function viewVoting(main) {
     row.innerHTML = `
       <div class="who">${esc(v.displayName)}<small>${weight > 1 ? `weight ${weight}` : 'weight 1'}</small></div>
       ${targetSelect('t', cur?.targetId, { exclude: [], blank: '— abstain —' })}
-      <span class="badge ${cur ? 'alive' : 'out'}">${cur ? 'Cast' : 'Waiting'}</span>`;
+      <span class="badge ${cur ? 'alive' : 'out'}">${sourceLabel(cur, 'Cast')}</span>`;
     row.querySelector('select').onchange = (e) => setBallot(v.id, e.target.value);
     grid.appendChild(row);
 
@@ -1088,7 +1326,7 @@ function viewVoting(main) {
 async function setBallot(voterId, targetId) {
   await commit((d) => {
     const list = (d.currentBallots || []).filter((b) => b.voterId !== voterId);
-    if (targetId) list.push({ voterId, targetId });
+    if (targetId) list.push({ voterId, targetId, source: SOURCE.ADMIN });
     d.currentBallots = list;
   });
 }
@@ -1218,6 +1456,14 @@ async function advancePhase() {
         d.game.roundsRemaining = Math.max(0, d.game.roundsRemaining - 1);
       }
     }, { eventType: 'SESSION_OPENED', summary: `Week ${g.currentRound + 1} opened` });
+
+    /* Wipe any submissions sitting against this week number. Without this, a
+       rewound-and-reopened week would read last week's choices as this week's
+       intent — the quietest possible way to kill the wrong person. */
+    if (live) {
+      const cleared = await live.clearRound(S().game.currentRound);
+      if (!cleared.ok) toast('Could not clear last week online: ' + cleared.reason, true);
+    }
     return;
   }
 
