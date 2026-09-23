@@ -14,7 +14,7 @@
   switch back to local and finish the night.
 */
 
-import { LocalAdapter, migrate } from './store.js';
+import { LocalAdapter, migrate, blankState } from './store.js';
 
 /* ------------------------------------------------------------- settings - */
 
@@ -93,6 +93,12 @@ export class SupabaseAdapter {
   constructor(client, gameId = GAME_ID) {
     this.sb = client;
     this.gameId = gameId;
+    /*
+      Guard against the console deleting a roster it never actually read.
+      Until load() has completed once, save() is not permitted to remove any
+      player row. See the comment on the delete step below.
+    */
+    this.loadedOk = false;
   }
 
   async load() {
@@ -105,12 +111,27 @@ export class SupabaseAdapter {
     if (playerRes.error) throw new Error('Could not load the players: ' + playerRes.error.message);
 
     const blob = gameRes.data?.blob;
+    const players = (playerRes.data || []).map(fromRow);
 
-    // Nothing saved yet. Returning null lets Store.init() build a blank game,
-    // which the first commit then writes.
-    if (!blob || !blob.game) return null;
+    this.loadedOk = true;
 
-    return migrate({ ...blob, players: (playerRes.data || []).map(fromRow) });
+    /*
+      The games blob is missing or empty, but player rows exist.
+
+      This used to return null, which told Store.init() to build a blank game
+      with an EMPTY roster. Two things then went wrong in sequence: the console
+      showed no players, and the next save computed "everyone in the database
+      who is not in my empty local roster" and deleted the lot.
+
+      A missing blob is not evidence that the roster is gone. Keep the players
+      and rebuild only the parts that are actually absent.
+    */
+    if (!blob || !blob.game) {
+      if (!players.length) return null;   // genuinely a fresh, empty game
+      return migrate({ ...blankState(), players });
+    }
+
+    return migrate({ ...blob, players });
   }
 
   async save(state) {
@@ -124,13 +145,39 @@ export class SupabaseAdapter {
         if (up.error) throw new Error(up.error.message);
       }
 
-      // 2. Remove anyone taken off the roster, so the database never keeps a
-      //    stale row a player could still log in against.
+      /*
+        2. Remove anyone taken off the roster, so the database never keeps a
+           stale row a player could still log in against.
+
+        THREE GUARDS, ALL EARNED.
+
+        Removing a player is rare and deliberate. Wiping the roster is never
+        what the admin meant, so a delete that looks like a wipe is refused and
+        reported rather than performed. The cost of refusing wrongly is one
+        stale row; the cost of deleting wrongly is the whole game.
+
+          a. Never delete before a successful load. If the console never read
+             the roster, its idea of who should exist is worthless.
+          b. Never delete when the local roster is empty. That is the blank
+             state, not an instruction to remove everybody.
+          c. Never delete every remaining row at once.
+      */
       const existing = await this.sb.from('players').select('id');
       if (existing.error) throw new Error(existing.error.message);
+
+      const existingIds = (existing.data || []).map((r) => r.id);
       const keep = new Set(players.map((p) => p.id));
-      const drop = (existing.data || []).map((r) => r.id).filter((id) => !keep.has(id));
-      if (drop.length) {
+      const drop = existingIds.filter((id) => !keep.has(id));
+
+      const unsafe =
+        !this.loadedOk ? 'the roster was never loaded' :
+        !players.length ? 'the console roster is empty' :
+        (existingIds.length && drop.length === existingIds.length)
+          ? 'it would remove every player' : null;
+
+      if (drop.length && unsafe) {
+        console.warn('[cloud] refused to delete players because ' + unsafe, drop);
+      } else if (drop.length) {
         const del = await this.sb.from('players').delete().in('id', drop);
         if (del.error) throw new Error(del.error.message);
       }
