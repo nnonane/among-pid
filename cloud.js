@@ -93,12 +93,6 @@ export class SupabaseAdapter {
   constructor(client, gameId = GAME_ID) {
     this.sb = client;
     this.gameId = gameId;
-    /*
-      Guard against the console deleting a roster it never actually read.
-      Until load() has completed once, save() is not permitted to remove any
-      player row. See the comment on the delete step below.
-    */
-    this.loadedOk = false;
   }
 
   async load() {
@@ -113,15 +107,13 @@ export class SupabaseAdapter {
     const blob = gameRes.data?.blob;
     const players = (playerRes.data || []).map(fromRow);
 
-    this.loadedOk = true;
-
     /*
       The games blob is missing or empty, but player rows exist.
 
       This used to return null, which told Store.init() to build a blank game
-      with an EMPTY roster. Two things then went wrong in sequence: the console
-      showed no players, and the next save computed "everyone in the database
-      who is not in my empty local roster" and deleted the lot.
+      with an EMPTY roster. The console then showed no players, and the next
+      save computed "everyone in the database who is not in my empty local
+      roster" and deleted the lot.
 
       A missing blob is not evidence that the roster is gone. Keep the players
       and rebuild only the parts that are actually absent.
@@ -132,6 +124,20 @@ export class SupabaseAdapter {
     }
 
     return migrate({ ...blob, players });
+  }
+
+  /**
+   * Re-reads just the player rows.
+   *
+   * The console's copy of the roster goes stale the moment anything else
+   * touches the table - a second tab, a seat claimed from player.html, or a
+   * row added directly in Supabase. Anything that needs to be certain it is
+   * looking at the current roster calls this first.
+   */
+  async loadPlayers() {
+    const { data, error } = await this.sb.from('players').select('*');
+    if (error) throw new Error('Could not load the players: ' + error.message);
+    return (data || []).map(fromRow);
   }
 
   async save(state) {
@@ -146,41 +152,29 @@ export class SupabaseAdapter {
       }
 
       /*
-        2. Remove anyone taken off the roster, so the database never keeps a
-           stale row a player could still log in against.
+        2. NO IMPLICIT DELETES. This step used to remove "everyone in the
+           database who is not in my local roster", and that is what kept
+           eating players.
 
-        THREE GUARDS, ALL EARNED.
+        The reasoning was that a removed player should not keep a row they
+        could log in against. The flaw is the premise: the console's roster is
+        a SNAPSHOT taken at load, and the players table has other writers -
+        a second tab, a seat claimed from player.html, a row added straight
+        into Supabase. The moment the snapshot is stale, "not in my roster"
+        stops meaning "removed" and starts meaning "added while I was not
+        looking" - and a routine save silently deletes a real player.
 
-        Removing a player is rare and deliberate. Wiping the roster is never
-        what the admin meant, so a delete that looks like a wipe is refused and
-        reported rather than performed. The cost of refusing wrongly is one
-        stale row; the cost of deleting wrongly is the whole game.
+        That is precisely the failure that lost a linked seat: the console
+        held one player, the database held two, and saving deleted the second.
+        An all-or-nothing guard cannot catch it, because deleting one of two
+        rows looks exactly like a legitimate removal.
 
-          a. Never delete before a successful load. If the console never read
-             the roster, its idea of who should exist is worthless.
-          b. Never delete when the local roster is empty. That is the blank
-             state, not an instruction to remove everybody.
-          c. Never delete every remaining row at once.
+        Removal is now explicit and rare, through removePlayer() below. The
+        cost of keeping a stale row is a name on a list; the cost of deleting
+        a live one is somebody's game. Marking a player "Left permanently"
+        (INACTIVE) in the roster already removes them from play without
+        touching the row, which is the safer path in every case anyway.
       */
-      const existing = await this.sb.from('players').select('id');
-      if (existing.error) throw new Error(existing.error.message);
-
-      const existingIds = (existing.data || []).map((r) => r.id);
-      const keep = new Set(players.map((p) => p.id));
-      const drop = existingIds.filter((id) => !keep.has(id));
-
-      const unsafe =
-        !this.loadedOk ? 'the roster was never loaded' :
-        !players.length ? 'the console roster is empty' :
-        (existingIds.length && drop.length === existingIds.length)
-          ? 'it would remove every player' : null;
-
-      if (drop.length && unsafe) {
-        console.warn('[cloud] refused to delete players because ' + unsafe, drop);
-      } else if (drop.length) {
-        const del = await this.sb.from('players').delete().in('id', drop);
-        if (del.error) throw new Error(del.error.message);
-      }
 
       // 3. Everything else as one blob.
       const blob = await this.sb.from('games').upsert({
@@ -199,6 +193,16 @@ export class SupabaseAdapter {
                 'Your game is still open in this browser - take a backup before refreshing.'
       };
     }
+  }
+
+  /**
+   * The only path that deletes a player row. Deliberate, one at a time, and
+   * never triggered by a routine save.
+   */
+  async removePlayer(playerId) {
+    const { error } = await this.sb.from('players').delete().eq('id', playerId);
+    if (error) return { ok: false, reason: error.message };
+    return { ok: true };
   }
 
   async clear() {
