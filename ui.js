@@ -1,11 +1,11 @@
-/* mafia v0.4 | ui.js | 23 Sep 2026 */
+/* mafia v0.5 | ui.js | 28 Sep 2026 */
 /*
   Rendering and admin controls. Talks to store.js and engine.js only.
   Contains NO game rules — anything that decides an outcome lives in engine.js.
 
-  v0.4 adds live player submissions. The console now READS what players
-  submitted from player.html instead of only taking dictation. Three things
-  are deliberately unchanged:
+  v0.4 added live player submissions. The console READS what players submitted
+  from player.html instead of only taking dictation. Three things are
+  deliberately unchanged:
 
     1. engine.js. Submissions are folded into currentActions and
        currentBallots in exactly the shape it already consumed.
@@ -13,6 +13,16 @@
        laptop died, and an admin edit always outranks a later sync.
     3. Offline mode. With no cloud there is no sync, and the console runs
        precisely as it did in v0.2.3.
+
+  v0.5 fixes the Rewards race that lost the Doctor's token.
+
+  The winner checkbox called store.commit() WITHOUT awaiting it, while the
+  5-second poll re-rendered the whole Rewards view underneath it. A poll
+  landing mid-commit rebuilt the winners table from state that had not yet
+  been written, so the tick silently disappeared and that player was never
+  paid. The fix is an `editing` latch: the poll refuses to redraw while a
+  commit from a form control is in flight, and the handler now awaits its
+  own write. Nothing about the award logic itself changed - it was correct.
 */
 
 import * as E from './engine.js';
@@ -37,15 +47,22 @@ let pendingPurchases = [];
    phase change can never leave two of them running. */
 let pollTimer = null;
 
+/* Raised while a form control is mid-commit. The poll will not re-render
+   while this is set, so a checkbox cannot be redrawn from stale state
+   between the click and the write landing. */
+let editing = false;
+
 /* ---------------------------------------------------------------- helpers */
 
 const $ = (id) => document.getElementById(id);
+
 const el = (tag, cls, html) => {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
   if (html != null) n.innerHTML = html;
   return n;
 };
+
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -111,6 +128,24 @@ async function commit(mutator, audit) {
   render();
 }
 
+/**
+ * A commit raised by a form control the admin is actively using.
+ *
+ * Holds the `editing` latch for the duration of the write, so the poll
+ * cannot redraw the surrounding view from state the commit has not reached
+ * yet. Does NOT re-render on its own: the control is already showing the
+ * value the admin chose, and repainting underneath their cursor is the
+ * behaviour this exists to prevent.
+ */
+async function commitQuiet(mutator, audit) {
+  editing = true;
+  try {
+    await store.commit(mutator, audit);
+  } finally {
+    editing = false;
+  }
+}
+
 /* ==================================================== LIVE SUBMISSIONS == */
 /*
   The console polls rather than subscribing. Polling is boring, survives a
@@ -169,6 +204,10 @@ function startPolling() {
   const collecting = [E.PHASE.HIDDEN_ACTIONS, E.PHASE.VOTING, E.PHASE.REWARDS];
   if (!collecting.includes(S().game.status)) return;
   pollTimer = setInterval(async () => {
+    /* Never redraw while the admin is mid-edit. A tick that vanishes
+       because a poll landed is indistinguishable from one that was never
+       registered, and it cost the Doctor a token. */
+    if (editing) return;
     if (await pollNow()) render();
   }, 5000);
 }
@@ -225,6 +264,7 @@ const isStaged = (p, type) =>
   (p.inventory || []).some(
     (i) => i.rewardType === type && i.status === 'STAGED' && i.stagedRound === S().game.currentRound
   );
+
 const ownsUsable = (p, type) =>
   (p.inventory || []).some(
     (i) =>
@@ -246,6 +286,7 @@ function sourceLabel(entry, doneWord = 'Submitted') {
 function playerOption(p, selected) {
   return `<option value="${p.id}"${selected === p.id ? ' selected' : ''}>${esc(p.displayName)}</option>`;
 }
+
 function targetSelect(name, current, { exclude = [], pool = present(), blank = '— none —' } = {}) {
   const opts = pool
     .filter((p) => !exclude.includes(p.id))
@@ -420,6 +461,7 @@ function viewClosed(main) {
         <button class="btn primary" id="btnDeal">${assigned ? 'Re-deal all roles' : 'Deal roles'}</button>
       </div>`;
     main.appendChild(roles);
+
     roles.querySelector('#btnDeal').onclick = async () => {
       if (assigned && !(await confirmAction('Re-deal every role?',
         'All current role assignments are replaced. Tokens, points and inventory are kept.'))) return;
@@ -483,6 +525,7 @@ function viewAttendance(main) {
     tr.querySelector('[data-out]').onclick = () => setAttendance(p.id, E.ATTENDANCE.DORMANT);
     body.appendChild(tr);
   }
+
   card.querySelector('#allIn').onclick = () => setAllAttendance(E.ATTENDANCE.PRESENT);
   card.querySelector('#allOut').onclick = () => setAllAttendance(E.ATTENDANCE.DORMANT);
 
@@ -616,6 +659,7 @@ function viewHiddenActions(main) {
       mCard.appendChild(el('p', 'faint',
         'Current tally: ' + entries.map(([id, n]) => `${esc(nameOf(id))} ${n}`).join(' · ')));
     }
+
     // Bypass staging
     for (const m of mafia) {
       if (ownsUsable(m, E.ITEM.BYPASS_DOCTOR_SAVE) || isStaged(m, E.ITEM.BYPASS_DOCTOR_SAVE)) {
@@ -655,6 +699,7 @@ function viewHiddenActions(main) {
           setAction(doc.id, E.ACTION.DOCTOR_SAVE, cur?.targetId, e.target.value);
         dCard.appendChild(row2);
       }
+
       for (const item of [E.ITEM.SELF_SAVE, E.ITEM.DOUBLE_SAVE]) {
         if (ownsUsable(doc, item) || isStaged(doc, item)) dCard.appendChild(stageToggle(doc, item));
       }
@@ -691,6 +736,7 @@ function viewHiddenActions(main) {
           setAction(sh.id, E.ACTION.SHERIFF_INVESTIGATE, cur?.targetId, e.target.value);
         sCard.appendChild(row2);
       }
+
       if (ownsUsable(sh, E.ITEM.ADDITIONAL_INVESTIGATION) || isStaged(sh, E.ITEM.ADDITIONAL_INVESTIGATION)) {
         sCard.appendChild(stageToggle(sh, E.ITEM.ADDITIONAL_INVESTIGATION));
       }
@@ -714,9 +760,12 @@ function stageToggle(player, itemType) {
   return wrap;
 }
 
+/* Uses commitQuiet: this is a checkbox the admin is actively clicking, and a
+   poll landing mid-write must not redraw it from state the write has not
+   reached yet. Same class of bug as the winners table. */
 async function toggleStage(playerId, itemType, on) {
   const round = S().game.currentRound;
-  await commit((d) => {
+  await commitQuiet((d) => {
     d.players = d.players.map((p) => {
       if (p.id !== playerId) return p;
       const inv = [...(p.inventory || [])];
@@ -731,6 +780,7 @@ async function toggleStage(playerId, itemType, on) {
       return { ...p, inventory: inv };
     });
   });
+  render();
 }
 
 /*
@@ -825,7 +875,7 @@ function viewRewards(main) {
     <table><thead><tr><th>Player</th><th>State</th><th style="width:110px">Winner</th></tr></thead>
     <tbody id="wBody"></tbody></table>
     <div class="btn-row">
-      <button class="btn primary" id="award">Award tokens & points</button>
+      <button class="btn primary" id="award">Award tokens &amp; points</button>
     </div>`;
   main.appendChild(card);
 
@@ -838,10 +888,25 @@ function viewRewards(main) {
       <td>${esc(p.displayName)}</td>
       <td>${dead ? '<span class="badge spirit">Spirit</span>' : '<span class="badge alive">Alive</span>'}</td>
       <td><input type="checkbox" ${winners.has(p.id) ? 'checked' : ''}></td>`;
-    tr.querySelector('input').onchange = (e) => {
+
+    /*
+      THE DOCTOR'S MISSING TOKEN.
+
+      This handler used to fire store.commit() without awaiting it. The
+      Rewards phase polls every 5 seconds, and a poll landing between the
+      click and the write rebuilt this table from state the write had not
+      reached - silently un-ticking the box. The admin saw a tick, pressed
+      Award, and that player got nothing.
+
+      commitQuiet() holds the `editing` latch for the duration of the write
+      so the poll cannot redraw mid-flight, and the await means the state is
+      committed before anything else can read it.
+    */
+    tr.querySelector('input').onchange = async (e) => {
+      const checked = e.target.checked;
       const next = new Set(S().currentWinners || []);
-      e.target.checked ? next.add(p.id) : next.delete(p.id);
-      store.commit((d) => { d.currentWinners = [...next]; });
+      checked ? next.add(p.id) : next.delete(p.id);
+      await commitQuiet((d) => { d.currentWinners = [...next]; });
     };
     body.appendChild(tr);
   }
@@ -850,6 +915,14 @@ function viewRewards(main) {
     const ids = S().currentWinners || [];
     if (!ids.length) return toast('Select at least one winner.', true);
     if (S().currentRewardsPaid) return toast('Tokens already awarded this week.', true);
+
+    /* Name everyone about to be paid. The failure mode here is silent - a
+       missing tick pays nobody and says nothing - so the confirmation reads
+       the list back before any token moves. */
+    const names = ids.map(nameOf).join(', ');
+    if (!(await confirmAction('Award tokens to these players?',
+      `${names}. Anyone missing from that list gets nothing, and this can only be run once this week.`))) return;
+
     await commit((d) => {
       d.players = d.players.map((p) =>
         ids.includes(p.id) && p.lifeStatus === E.LIFE.ALIVE
@@ -864,7 +937,7 @@ function viewRewards(main) {
       d.currentRewardsPaid = true;
     }, {
       eventType: 'TOKENS_AWARDED',
-      summary: `Tokens awarded to ${ids.map(nameOf).join(', ')}`,
+      summary: `Tokens awarded to ${names}`,
       trackDiff: true
     });
     toast('Tokens and Spirit Points allocated.');
@@ -984,10 +1057,8 @@ function purchaseQueue(main) {
 async function purchase(playerId, itemType) {
   const p = byId(playerId);
   if (!p || !itemType) return toast('Select a player and a reward.', true);
-
   const check = E.canPurchase(p, itemType, S().players, settings());
   if (!check.ok) return toast(check.reason, true);
-
   const round = S().game.currentRound;
 
   if (itemType === E.ITEM.RECRUIT_NEW_MAFIA) {
@@ -1178,6 +1249,7 @@ function viewMaster(main) {
       <p class="hint">Enable the Master role in Settings if you want to use it.</p>`));
     return;
   }
+
   const m = S().currentMaster || {};
   const card = el('div', 'card private');
   card.innerHTML = `
@@ -1191,17 +1263,24 @@ function viewMaster(main) {
   main.appendChild(card);
 
   const [a, b] = card.querySelectorAll('select');
-  a.onchange = () => store.commit((d) => {
-    d.currentMaster = { ...(d.currentMaster || {}), immunePlayerId: a.value || null };
-  }).then(() => toast('Immunity recorded privately.'));
-  b.onchange = () => store.commit((d) => {
-    d.currentMaster = { ...(d.currentMaster || {}), doubleVotePlayerId: b.value || null };
-  }).then(() => toast('Double vote recorded privately.'));
+  a.onchange = async () => {
+    await commitQuiet((d) => {
+      d.currentMaster = { ...(d.currentMaster || {}), immunePlayerId: a.value || null };
+    });
+    toast('Immunity recorded privately.');
+  };
+  b.onchange = async () => {
+    await commitQuiet((d) => {
+      d.currentMaster = { ...(d.currentMaster || {}), doubleVotePlayerId: b.value || null };
+    });
+    toast('Double vote recorded privately.');
+  };
 }
 
 /* ------------------------------------------------------ DISCUSSION ----- */
 
 let timerHandle = null;
+
 function viewDiscussion(main) {
   const card = el('div', 'card accent');
   card.innerHTML = `
@@ -1227,6 +1306,7 @@ function viewDiscussion(main) {
     clock.textContent = `${m}:${s}`;
   };
   const stop = () => { clearInterval(timerHandle); timerHandle = null; };
+
   card.querySelector('#startT').onclick = () => {
     if (timerHandle) return;
     timerHandle = setInterval(() => {
@@ -1301,11 +1381,11 @@ function viewVoting(main) {
       <label class="field"><span>Adjustment</span>
         <select data-field="d">
           <option value="1"${vm?.delta === 1 ? ' selected' : ''}>+1 vote</option>
-          <option value="-1"${vm?.delta === -1 ? ' selected' : ''}>−1 vote</option>
+          <option value="-1"${vm?.delta === -1 ? ' selected' : ''}>&minus;1 vote</option>
         </select></label>`;
     main.appendChild(mcard);
     const [t, d] = mcard.querySelectorAll('select');
-    const save = () => store.commit((st) => {
+    const save = () => commitQuiet((st) => {
       st.currentManipulation = t.value ? { targetId: t.value, delta: Number(d.value) } : null;
     });
     t.onchange = save; d.onchange = save;
@@ -1316,9 +1396,22 @@ function viewVoting(main) {
     <button class="btn primary" id="tally">Tally the vote</button></div>
     <p class="faint" style="margin-top:10px">${ballots.length} of ${voters.length} ballots entered.</p>`;
   main.appendChild(go);
+
   go.querySelector('#tally').onclick = async () => {
     if (!ballots.length) return toast('No ballots entered.', true);
-    const res = E.resolveVote(S(), ballots, S().currentMaster || {}, S().currentManipulation);
+
+    /* One last sync before the tally. A ballot that arrives between the last
+       poll and this click would otherwise be silently excluded from a count
+       that cannot be re-run. */
+    if (live) {
+      await pollNow({ silent: false });
+    }
+    const finalBallots = S().currentBallots || [];
+    const missing = voters.length - finalBallots.length;
+    if (missing > 0 && !(await confirmAction(`Tally with ${missing} ballot(s) missing?`,
+      'Anyone who has not voted is counted as abstaining. You can rewind afterwards, but the result is recorded now.'))) return;
+
+    const res = E.resolveVote(S(), finalBallots, S().currentMaster || {}, S().currentManipulation);
     await commit((d) => { d.currentVoteResult = res; d.game.status = E.PHASE.RESULTS; });
   };
 }
@@ -1370,6 +1463,7 @@ function viewResults(main) {
       <p class="hint">This commits the death, runs Doctor succession and checks Legacy and victory.</p>
       <div class="btn-row"><button class="btn primary" id="applyEl">Apply elimination</button></div>`;
     main.appendChild(apply);
+
     apply.querySelector('#applyEl').onclick = async () => {
       const rngSucc = rngFor('vote-succession');
       await commit((d) => {
@@ -1383,7 +1477,9 @@ function viewResults(main) {
       }, { eventType: 'ELIMINATION',
            summary: `${nameOf(res.eliminated)} was voted out (${roleLabel(res.revealedRole)})`,
            trackDiff: true });
+
       await runLegacyAndEndgame();
+
       const succ = S().pendingSuccessorId;
       if (succ) {
         toast(`${nameOf(succ)} has inherited the Doctor role — tell them privately.`);
@@ -1478,6 +1574,11 @@ async function advancePhase() {
       'No resolution has been published this week. The death or no-death result will be skipped.'))) return;
   }
 
+  if (g.status === E.PHASE.REWARDS && !S().currentRewardsPaid && (S().currentWinners || []).length) {
+    if (!(await confirmAction('Advance without awarding tokens?',
+      'Winners are ticked but Award tokens & points has not been pressed. Nobody has been paid.'))) return;
+  }
+
   await commit((d) => { d.game.status = E.nextPhase(d.game.status); });
 }
 
@@ -1507,6 +1608,7 @@ async function closeSession() {
     d.currentManipulation = null;
     d.currentMaster = { immunePlayerId: null, doubleVotePlayerId: null };
   }, { eventType: 'SESSION_CLOSED', summary: `Week ${S().game.currentRound} closed` });
+
   toast('Session closed. Nothing will change until you open the next one.');
 }
 
@@ -1527,41 +1629,34 @@ function openPlayerModal(id) {
   openModal(`
     <h2>${esc(p.displayName)}</h2>
     <p class="hint">Manual override. A reason is recorded in the audit log.</p>
-
     <label class="field"><span>Role</span>
       <select id="mRole">${Object.values(E.ROLE).map((r) =>
         `<option value="${r}"${p.role === r ? ' selected' : ''}>${esc(roleLabel(r))}</option>`).join('')}</select></label>
-
     <label class="field"><span>Life status</span>
       <select id="mLife">
         <option value="ALIVE"${p.lifeStatus === 'ALIVE' ? ' selected' : ''}>Alive</option>
         <option value="SPIRIT"${p.lifeStatus === 'SPIRIT' ? ' selected' : ''}>Spirit</option>
       </select></label>
-
     <label class="field"><span>Attendance</span>
       <select id="mAtt">
         <option value="PRESENT"${p.attendanceStatus === 'PRESENT' ? ' selected' : ''}>Present</option>
         <option value="DORMANT"${p.attendanceStatus === 'DORMANT' ? ' selected' : ''}>Dormant</option>
         <option value="INACTIVE"${p.attendanceStatus === 'INACTIVE' ? ' selected' : ''}>Left permanently</option>
       </select></label>
-
     <div class="inline">
       <label class="field"><span>Reward tokens</span>
         <input type="number" id="mTok" min="0" value="${p.rewardTokens}"></label>
       <label class="field"><span>Spirit points</span>
         <input type="number" id="mSp" min="0" value="${p.spiritPoints}"></label>
     </div>
-
     <h3>Inventory</h3>
     ${inv.length ? `<ul class="feed">${inv.map((i) =>
       `<li>${esc(ITEM_LABEL[i.rewardType] || i.rewardType)}
         <span class="badge ${i.status === 'STAGED' ? 'dormant' : 'out'}">${i.status}</span></li>`).join('')}</ul>`
       : '<p class="empty">Nothing held.</p>'}
     ${p.flags?.revealAlignmentOnDeath ? '<p class="faint">Alignment will be revealed on death.</p>' : ''}
-
     <label class="field"><span>Reason for change</span>
       <input type="text" id="mWhy" placeholder="e.g. corrected a misheard action"></label>
-
     <div class="btn-row">
       <button class="btn primary" id="mSave">Save override</button>
       <button class="btn ghost" id="mCancel">Cancel</button>
@@ -1606,18 +1701,15 @@ function openSettings() {
     ${numeric.map((k) => `<label class="field"><span>${esc(SETTING_LABEL[k])}</span>
       <input type="number" step="${k === 'suspiciousFalsePositiveChance' ? '0.05' : '1'}"
         min="0" data-set="${k}" value="${s[k]}"></label>`).join('')}
-
     <label class="field"><span>${esc(SETTING_LABEL.voteManipulationDirection)}</span>
       <select data-set="voteManipulationDirection">
         <option value="1"${s.voteManipulationDirection === 1 ? ' selected' : ''}>Add a vote (+1)</option>
-        <option value="-1"${s.voteManipulationDirection === -1 ? ' selected' : ''}>Remove a vote (−1)</option>
+        <option value="-1"${s.voteManipulationDirection === -1 ? ' selected' : ''}>Remove a vote (&minus;1)</option>
       </select></label>
-
     <div class="checkline"><input type="checkbox" id="setImm" ${s.tempImmunityCoversVote ? 'checked' : ''}>
       <label for="setImm">${esc(SETTING_LABEL.tempImmunityCoversVote)}</label></div>
     <div class="checkline"><input type="checkbox" id="setMaster" ${s.masterEnabled ? 'checked' : ''}>
       <label for="setMaster">${esc(SETTING_LABEL.masterEnabled)}</label></div>
-
     <h3>Countdown mode</h3>
     <div class="checkline"><input type="checkbox" id="cdOn" ${g.countdownEnabled ? 'checked' : ''}>
       <label for="cdOn">Countdown active</label></div>
@@ -1627,7 +1719,6 @@ function openSettings() {
     </div>
     <div class="checkline"><input type="checkbox" id="cdLeg" ${g.countdownDisablesLegacy ? 'checked' : ''}>
       <label for="cdLeg">Countdown disables an unused Mafia Legacy</label></div>
-
     <div class="btn-row">
       <button class="btn primary" id="sSave">Save settings</button>
       <button class="btn ghost" id="sCancel">Cancel</button>
@@ -1663,7 +1754,6 @@ function openBackup() {
     <h2>Backup &amp; restore</h2>
     <div class="warnbox">This file pairs real names with hidden roles.
       Save it to OneDrive — never commit it to the repository.</div>
-
     <h3>Back up</h3>
     <div class="btn-row" style="margin-top:0">
       <button class="btn primary" id="bDown">Download file</button>
@@ -1671,7 +1761,6 @@ function openBackup() {
       <button class="btn ghost" id="bShow">Show text</button>
     </div>
     <div id="bOut"></div>
-
     <h3>Restore</h3>
     <p class="faint">Replaces the current game entirely. Back up first if in doubt.</p>
     <div class="btn-row" style="margin-top:0">
@@ -1835,6 +1924,7 @@ $('btnBackup').onclick = openBackup;
    admin could keep running a session that was never reaching localStorage.
    Now it surfaces immediately. */
 store.onError = (message) => toast(message, true);
+
 mountStorageButton(mode, sb);
 
 await store.init();
