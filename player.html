@@ -1,15 +1,30 @@
 <!DOCTYPE html>
-<!-- mafia v0.4 | player.html | 23 Sep 2026 -->
+<!-- mafia v0.5 | player.html | 24 Sep 2026 -->
 <!--
   THE PLAYER SCREEN.
 
-  Phase-aware. The admin console publishes which phase it is in; this page
-  reads that signal and shows the one thing the player can do right now:
-  an action, a purchase, a ballot, or nothing at all.
+  v0.5 fixes four things found in the first live round:
 
-  It never trusts itself. Every submission is re-checked by row level
-  security in the database, because this file runs on a laptop the player
-  controls and a determined one can open dev tools.
+  1. ERRORS ARE NO LONGER SWALLOWED. The Mafia panel ignored the error
+     field completely, so a failed query looked identical to an empty
+     result and the page confidently announced "you are the only Mafia
+     left" to a player with three living partners. A query that fails now
+     says so.
+
+  2. NO MORE maybeSingle(). It throws when more than one row comes back.
+     While the database was over-sharing, the player's own ballot query
+     returned everybody's ballots, errored, and came back null - so the
+     page never showed "ballot cast" and voting looked broken even though
+     the vote had registered. Own rows are now picked client-side.
+
+  3. DEATH IS ANNOUNCED. Life status changes now raise a banner that
+     stays put until dismissed, instead of quietly restyling a heading
+     that nobody was looking at.
+
+  4. DEFENCE IN DEPTH. Everything private is filtered here as well as in
+     the database. The database is the real boundary; this is the belt to
+     its braces, so a future policy mistake degrades to a bug rather than
+     a leak.
 -->
 <html lang="en">
 <head>
@@ -29,6 +44,7 @@
   .card.act { border-left:3px solid #d4a933; }
   .card.quiet { border-left:3px solid #27395c; }
   .card.mafia { border-left:3px solid #d9534f; background:#1c1526; }
+  .card.alert { border-left:3px solid #d9534f; background:#2a1418; }
   label { display:block; font-size:11px; letter-spacing:.1em;
           text-transform:uppercase; color:#64789c; margin:0 0 6px; }
   input, select { background:#0b1120; border:1px solid #27395c; border-radius:8px;
@@ -51,10 +67,12 @@
   .role { font-size:34px; font-weight:700; color:#d4a933;
           margin:8px 0 0; letter-spacing:.02em; }
   .role.isMafia { color:#ff8a86; }
+  .role.isSpirit { color:#c5b8e8; }
   .hide { display:none; }
   h2 { font-size:11px; letter-spacing:.1em; text-transform:uppercase;
        color:#64789c; margin:0 0 14px; font-weight:600; }
   h3 { font-size:16px; margin:0 0 6px; font-weight:650; }
+  .big { font-size:24px; font-weight:700; margin:0 0 8px; color:#ff8a86; }
   p.hint { color:#93a5c4; font-size:13.5px; margin:0 0 16px; }
   .who { display:flex; align-items:center; gap:10px;
          padding:10px 0; border-bottom:1px solid #1e2c49; }
@@ -99,6 +117,8 @@
     <button id="go">Log in</button>
   </div>
 
+  <div id="alertCard"></div>
+
   <div class="card hide" id="roleCard">
     <div class="name" id="who"></div>
     <div class="role" id="role"></div>
@@ -128,7 +148,16 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const URL = 'https://ashjitdpilxwcfhxamni.supabase.co';
 const KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFzaGppdGRwaWx4d2NmaHhhbW5pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwNDAxOTEsImV4cCI6MjEwNTYxNjE5MX0.wWTdrocCPlOWWN5CwTVi--OgWuVBEc99zWxWfVE_Gqk';
-const sb = createClient(URL, KEY);
+
+/*
+  A storage key of our own. Without it this page and the admin console,
+  being the same origin and the same project, share one session - so
+  signing in here as a player silently took over the console, which then
+  queried as that player and showed a roster of one.
+*/
+const sb = createClient(URL, KEY, {
+  auth: { storageKey: 'ampid-player', persistSession: true }
+});
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g,
@@ -179,8 +208,6 @@ const ACTION_FOR = {
   SHERIFF: 'SHERIFF_INVESTIGATE'
 };
 
-/* Copy shown while there is nothing to submit. Deliberately tells the
-   player what is happening in the room so they do not think it is broken. */
 const IDLE = {
   CLOSED:      ['Nothing is running', 'The session is closed. Your role, tokens and items are all safe until Hunter opens the next week.'],
   ATTENDANCE:  ['Session starting', 'Hunter is marking who is here. Hold tight.'],
@@ -194,19 +221,27 @@ const IDLE = {
 
 /* -------------------------------------------------------------- state -- */
 
-let me = null;       // my player row
-let phase = null;    // { phase, current_round, public_text, winner }
+let me = null;
+let phase = null;
 let roster = [];
 let myAction = null;
 let myBallot = null;
 let myPurchases = [];
+let mafiaPeers = null;      // null = not loaded, [] = genuinely none
+let mafiaError = null;
+let inbox = [];
 let busy = false;
 let timer = null;
 
+/* Remembered across refreshes so a change can be announced rather than
+   just quietly redrawn. Null until the first successful load. */
+let lastLife = null;
+let alertHtml = '';
+
 const alive = () => me && me.life_status === 'ALIVE' && me.attendance_status === 'PRESENT';
 const round = () => phase?.current_round ?? 0;
+const nameOf = (id) => roster.find((r) => r.id === id)?.display_name ?? 'someone';
 
-/** Items I hold that are usable this week. */
 const owns = (type) => (me?.inventory || []).some(
   (i) => i.rewardType === type
     && (i.status === 'OWNED' || i.status === 'STAGED')
@@ -219,8 +254,6 @@ async function load() {
   const { data: { user } } = await sb.auth.getUser();
   if (!user) return;
 
-  // Safe to call every time: it does nothing once a seat is linked, and it
-  // can only ever link the seat the admin set aside for this exact address.
   await sb.rpc('claim_my_seat');
 
   const { data: rows, error } = await sb
@@ -229,11 +262,12 @@ async function load() {
     .eq('auth_user_id', user.id);
 
   if (error) return fail('Could not load your role: ' + error.message);
-  if (!rows.length) {
+  if (!rows || !rows.length) {
     return fail('You are signed in, but no seat is linked to this email yet. '
               + 'Ask Hunter to add it to your player.');
   }
   me = rows[0];
+  lastLife = me.life_status;
 
   $('loginCard').classList.add('hide');
   $('roleCard').classList.remove('hide');
@@ -244,34 +278,93 @@ async function load() {
   if (!timer) timer = setInterval(refresh, 6000);
 }
 
-/** Re-reads everything that can change while the player is sitting there. */
+/*
+  One read of everything that can change underneath the player.
+
+  Note the absence of maybeSingle(). It raises an error the moment more
+  than one row comes back, and "my own row" is a filter this page should
+  apply itself rather than a guarantee it demands from the server.
+*/
 async function refresh() {
   if (busy) return;
 
   const [meRes, phaseRes, rosterRes] = await Promise.all([
     sb.from('players')
       .select('id, display_name, role, alignment, life_status, attendance_status, reward_tokens, spirit_points, inventory, flags')
-      .eq('id', me.id).maybeSingle(),
-    sb.from('game_phase').select('*').maybeSingle(),
+      .eq('id', me.id),
+    sb.from('game_phase').select('*'),
     sb.from('roster').select('id, display_name, life_status').order('display_name')
   ]);
 
-  if (meRes.data) me = meRes.data;
-  phase = phaseRes.data ?? { phase: 'CLOSED', current_round: 0, public_text: '', winner: '' };
+  if (meRes.data && meRes.data.length) me = meRes.data[0];
+  phase = (phaseRes.data && phaseRes.data[0])
+    ?? { phase: 'CLOSED', current_round: 0, public_text: '', winner: '', eliminated_id: '' };
   roster = rosterRes.data ?? [];
 
   const r = round();
-  const [aRes, bRes, pRes] = await Promise.all([
-    sb.from('actions').select('*').eq('round', r).maybeSingle(),
-    sb.from('ballots').select('*').eq('round', r).maybeSingle(),
-    sb.from('purchases').select('*').eq('round', r).order('created_at')
+  const [aRes, bRes, pRes, iRes] = await Promise.all([
+    sb.from('actions').select('*').eq('round', r),
+    sb.from('ballots').select('*').eq('round', r),
+    sb.from('purchases').select('*').eq('round', r).order('created_at'),
+    sb.from('private_events').select('round, type, body, created_at')
+      .order('created_at', { ascending: false }).limit(20)
   ]);
-  myAction = aRes.data ?? null;
-  myBallot = bRes.data ?? null;
-  myPurchases = pRes.data ?? [];
 
+  /* Filtered here as well as in the database. If a policy is ever wrong
+     again, this turns a leak into a bug. */
+  myAction    = (aRes.data ?? []).find((x) => x.actor_id === me.id) ?? null;
+  myBallot    = (bRes.data ?? []).find((x) => x.voter_id === me.id) ?? null;
+  myPurchases = (pRes.data ?? []).filter((x) => x.player_id === me.id);
+  inbox       = iRes.data ?? [];
+
+  await loadMafiaPeers();
+  checkLifeChange();
   paint();
-  paintInbox();
+}
+
+/* Kept separate so its error is visible rather than inferred. */
+async function loadMafiaPeers() {
+  if (!me || me.role !== 'MAFIA' || me.life_status !== 'ALIVE') {
+    mafiaPeers = null; mafiaError = null;
+    return;
+  }
+  const { data, error } = await sb.from('mafia_peers')
+    .select('id, display_name, life_status');
+  if (error) {
+    mafiaError = error.message;
+    mafiaPeers = null;
+    return;
+  }
+  mafiaError = null;
+  mafiaPeers = (data ?? []).filter((p) => p.id !== me.id);
+}
+
+/*
+  Being killed used to change a heading colour and nothing else, so people
+  only found out by logging out and back in. It now raises a banner and
+  stays there until acknowledged.
+*/
+function checkLifeChange() {
+  if (!me || lastLife === null) return;
+  if (me.life_status === lastLife) return;
+
+  if (lastLife === 'ALIVE' && me.life_status !== 'ALIVE') {
+    const votedOut = phase?.eliminated_id === me.id;
+    alertHtml = `
+      <div class="big">You are out.</div>
+      <p class="hint">${votedOut
+        ? 'The group voted you out. Your role has been revealed to everyone.'
+        : 'You were killed. Your role has not been revealed.'}</p>
+      <p class="hint">You are a Spirit now. Keep turning up &mdash; attendance earns
+        Spirit Points, and enough of them buys your way back in as a Civilian.
+        You cannot act, vote or buy rewards while you are out.</p>`;
+  } else if (lastLife !== 'ALIVE' && me.life_status === 'ALIVE') {
+    alertHtml = `
+      <div class="big" style="color:#7fe0ae">You are back.</div>
+      <p class="hint">Your resurrection went through. You return as a Civilian,
+        whatever you were before.</p>`;
+  }
+  lastLife = me.life_status;
 }
 
 /* -------------------------------------------------------------- paint -- */
@@ -282,17 +375,31 @@ function paint() {
 
   const isMafia = me.role === 'MAFIA';
   const spirit = me.life_status !== 'ALIVE';
-  $('role').textContent = spirit ? 'You are a Spirit' : 'You are the ' + (ROLE_LABEL[me.role] ?? me.role);
-  $('role').className = 'role' + (isMafia && !spirit ? ' isMafia' : '');
+  $('role').textContent = spirit
+    ? 'You are a Spirit'
+    : 'You are the ' + (ROLE_LABEL[me.role] ?? me.role);
+  $('role').className = 'role'
+    + (spirit ? ' isSpirit' : isMafia ? ' isMafia' : '');
   $('tok').textContent = me.reward_tokens ?? 0;
   $('spi').textContent = me.spirit_points ?? 0;
   $('stats').classList.remove('hide');
 
+  paintAlert();
   paintPhase();
   paintMafia();
+  paintInbox();
   paintRoster();
+
   $('foot').textContent = 'Updates automatically. Last checked '
     + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function paintAlert() {
+  const host = $('alertCard');
+  if (!alertHtml) return void (host.innerHTML = '');
+  host.innerHTML = card('alert', alertHtml
+    + '<button class="small" id="ackAlert">Got it</button>');
+  $('ackAlert').onclick = () => { alertHtml = ''; paintAlert(); };
 }
 
 function paintPhase() {
@@ -305,9 +412,18 @@ function paintPhase() {
         ? 'The town wins.' : 'The Mafia win.'}</p>`));
   }
 
-  if (p === 'HIDDEN_ACTIONS')  return paintAction(host);
-  if (p === 'REWARDS')         return paintShop(host);
-  if (p === 'VOTING')          return paintVote(host);
+  if (p === 'HIDDEN_ACTIONS') return paintAction(host);
+  if (p === 'REWARDS')        return paintShop(host);
+  if (p === 'VOTING')         return paintVote(host);
+
+  if (p === 'RESULTS') {
+    const who = phase.eliminated_id ? nameOf(phase.eliminated_id) : null;
+    return void (host.innerHTML = card('quiet', `
+      <h3>Results</h3>
+      <p class="hint">${who
+        ? esc(who) + ' was voted out.'
+        : 'The vote produced no elimination.'}</p>`));
+  }
 
   const [title, text] = IDLE[p] ?? ['Standing by', 'Nothing to submit right now.'];
   host.innerHTML = card('quiet',
@@ -327,8 +443,7 @@ function paintAction(host) {
   }
   if (!alive()) {
     return void (host.innerHTML = card('quiet',
-      `<h3>Hidden actions</h3>
-       <p class="hint">You cannot act this week.</p>`));
+      `<h3>Hidden actions</h3><p class="hint">You cannot act this week.</p>`));
   }
 
   const label = {
@@ -340,10 +455,9 @@ function paintAction(host) {
       'Innocent is always truthful. Suspicious proves nothing.']
   }[type];
 
-  // Self-targeting: only the Doctor, and only holding Self Save.
   const allowSelf = me.role === 'DOCTOR' && owns('SELF_SAVE');
   const second =
-    (me.role === 'DOCTOR'  && owns('DOUBLE_SAVE'))            ? 'Second player to protect' :
+    (me.role === 'DOCTOR'  && owns('DOUBLE_SAVE'))              ? 'Second player to protect' :
     (me.role === 'SHERIFF' && owns('ADDITIONAL_INVESTIGATION')) ? 'Second player to investigate' : null;
 
   const pool = roster.filter((r) => r.life_status === 'ALIVE'
@@ -353,7 +467,9 @@ function paintAction(host) {
   host.innerHTML = card('act', `
     <h3>${esc(label[0])}</h3>
     <p class="hint">${esc(label[1])}</p>
-    ${done ? '<div class="ok">Submitted. You can change it until Hunter moves on.</div>' : ''}
+    ${done ? `<div class="ok">Submitted &mdash; you chose
+      <strong>${esc(nameOf(myAction.target_id))}</strong>.
+      You can change it until Hunter moves on.</div>` : ''}
     <label>Target</label>
     <select id="aT">${optionList(pool, myAction?.target_id)}</select>
     ${second ? `<label>${esc(second)}</label>
@@ -463,7 +579,9 @@ function paintVote(host) {
     <h3>Who do you vote for?</h3>
     <p class="hint">Completely anonymous. Nobody &mdash; not even the other players &mdash;
       can see who you picked. Only the totals are read out.</p>
-    ${done ? '<div class="ok">Ballot cast. You can change it until voting closes.</div>' : ''}
+    ${done ? `<div class="ok">Ballot cast for
+      <strong>${esc(nameOf(myBallot.target_id))}</strong>.
+      You can change it until voting closes.</div>` : ''}
     <label>Your vote</label>
     <select id="vT">${optionList(pool, myBallot?.target_id)}</select>
     <button id="vGo">${done ? 'Change my vote' : 'Cast my vote'}</button>
@@ -493,38 +611,44 @@ async function castVote() {
 
 function paintMafia() {
   const host = $('mafiaCard');
-  if (me.role !== 'MAFIA' || me.life_status !== 'ALIVE') return void (host.innerHTML = '');
 
-  sb.from('mafia_peers').select('id, display_name, life_status').then(({ data }) => {
-    const peers = (data ?? []).filter((p) => p.id !== me.id);
-    host.innerHTML = card('mafia', `
+  if (me.role !== 'MAFIA' || me.life_status !== 'ALIVE') {
+    return void (host.innerHTML = '');
+  }
+
+  /* An error is not the same as an empty list, and telling a Mafia member
+     they are alone when they are not is a game-deciding lie. */
+  if (mafiaError) {
+    return void (host.innerHTML = card('mafia', `
       <h2>Your Mafia</h2>
-      ${peers.length
-        ? peers.map((p) => `<div class="who${p.life_status === 'ALIVE' ? '' : ' out'}">
-            <span class="dot"></span><span class="n">${esc(p.display_name)}</span>
-            ${p.life_status === 'ALIVE' ? '' : '<span class="status">Out</span>'}
-          </div>`).join('')
-        : '<p class="hint">You are the only Mafia left.</p>'}`);
-  });
+      <div class="err">Could not load your partners: ${esc(mafiaError)}<br>
+        Do not assume you are alone &mdash; ask Hunter.</div>`));
+  }
+
+  if (mafiaPeers === null) {
+    return void (host.innerHTML = card('mafia',
+      '<h2>Your Mafia</h2><p class="hint">Loading&hellip;</p>'));
+  }
+
+  host.innerHTML = card('mafia', `
+    <h2>Your Mafia</h2>
+    ${mafiaPeers.length
+      ? mafiaPeers.map((p) => `<div class="who${p.life_status === 'ALIVE' ? '' : ' out'}">
+          <span class="dot"></span><span class="n">${esc(p.display_name)}</span>
+          ${p.life_status === 'ALIVE' ? '' : '<span class="status">Out</span>'}
+        </div>`).join('')
+      : '<p class="hint">You are the only Mafia left.</p>'}`);
 }
 
-/** Sheriff findings and anything else addressed only to this player. */
 function paintInbox() {
   const host = $('inboxCard');
-  sb.from('private_events')
-    .select('round, type, body, created_at')
-    .order('created_at', { ascending: false })
-    .limit(8)
-    .then(({ data }) => {
-      const rows = data ?? [];
-      if (!rows.length) return void (host.innerHTML = '');
-      host.innerHTML = card('quiet', `
-        <h2>For your eyes only</h2>
-        ${rows.map((e) => `<div class="item">
-          <div><div class="t">${esc(e.body)}</div>
-          <div class="d">Week ${e.round}</div></div>
-        </div>`).join('')}`);
-    });
+  if (!inbox.length) return void (host.innerHTML = '');
+  host.innerHTML = card('quiet', `
+    <h2>For your eyes only</h2>
+    ${inbox.slice(0, 8).map((e) => `<div class="item">
+      <div><div class="t">${esc(e.body)}</div>
+      <div class="d">Week ${e.round}</div></div>
+    </div>`).join('')}`);
 }
 
 function paintRoster() {
@@ -558,11 +682,6 @@ function fail(msg) {
   $('err').innerHTML = `<div class="err">${esc(msg)}</div>`;
 }
 
-/*
-  A rejected policy comes back as a wall of Postgres. Players do not need to
-  read that; they need to know whether they did something wrong or simply
-  acted at the wrong moment.
-*/
 function explain(message) {
   if (/row-level security|violates row-level/i.test(message)) {
     return 'That was not accepted — the phase has probably moved on, or you are '
@@ -579,7 +698,7 @@ function explain(message) {
 $('go').onclick = async () => {
   $('err').innerHTML = '';
   const { error } = await sb.auth.signInWithPassword({
-    email: $('email').value.trim(),
+    email: $('email').value.trim().toLowerCase(),
     password: $('pw').value
   });
   if (error) return fail(error.message);
