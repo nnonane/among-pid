@@ -1,4 +1,4 @@
-/* mafia v0.5 | ui.js | 28 Sep 2026 */
+/* mafia v0.6 | ui.js | 29 Sep 2026 */
 /*
   Rendering and admin controls. Talks to store.js and engine.js only.
   Contains NO game rules — anything that decides an outcome lives in engine.js.
@@ -23,6 +23,14 @@
   paid. The fix is an `editing` latch: the poll refuses to redraw while a
   commit from a form control is in flight, and the handler now awaits its
   own write. Nothing about the award logic itself changed - it was correct.
+
+  v0.6 fixes restarting a game online, and adds a Reset button.
+  The old reset emptied the roster in the console but left every player row
+  in the database. Re-typing a name then created a second row with a new id
+  and no login, and the old rows reappeared on refresh with last game's
+  roles. Reset now keeps the same player rows (so logins survive) and wipes
+  only the game data. Adding a player also checks the live database first,
+  so the same name can no longer create a duplicate.
 */
 
 import * as E from './engine.js';
@@ -377,6 +385,130 @@ function renderFeed() {
   }
 }
 
+/* ====================================================== ROSTER SYNC ==== */
+/**
+ * Pulls in any player rows that exist in the database but not in this
+ * console (added from another tab, or left behind by an older reset).
+ * Does nothing offline. Never removes anyone.
+ */
+async function syncRosterFromDatabase() {
+  if (typeof adapter.loadPlayers !== 'function') return;
+  let fresh;
+  try { fresh = await adapter.loadPlayers(); } catch { return; }
+  const known = new Set(S().players.map((p) => p.id));
+  const missing = fresh.filter((p) => !known.has(p.id));
+  if (!missing.length) return;
+  await store.commit((d) => { d.players = [...d.players, ...missing]; },
+    { eventType: 'ROSTER_SYNCED',
+      summary: `${missing.length} player(s) loaded from the database` });
+}
+
+/* ============================================================ RESET ===== */
+function downloadBackup() {
+  const blob = new Blob([store.exportJson()], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = store.backupFilename();
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
+}
+
+function openResetPanel() {
+  openModal(`
+    <h2>Reset the game</h2>
+    <p class="hint">Takes the game back to week 0. Pick how much to clear.</p>
+    <div class="warnbox">This cannot be undone. Download a backup first if you might want this game back.</div>
+    <div class="btn-row" style="margin-top:0">
+      <button class="btn" id="rBackup">Download backup</button>
+    </div>
+
+    <h3>New game, same players</h3>
+    <p class="faint">Keeps everyone on the roster <strong>and their logins</strong>.
+      Wipes roles, tokens, Spirit Points, items, history and every player
+      submission. Deal roles again afterwards. Settings are kept.</p>
+    <div class="btn-row" style="margin-top:8px">
+      <button class="btn primary" id="rKeep">Reset — keep players</button>
+    </div>
+
+    <h3>Wipe everything</h3>
+    <p class="faint">Also deletes every player.${live
+      ? ' Online, every login email has to be set up again.' : ''}
+      Type <strong>RESET</strong> to enable.</p>
+    <div class="inline">
+      <label class="field" style="margin:0"><span>Confirm</span>
+        <input type="text" id="rType" autocomplete="off" placeholder="RESET"></label>
+      <button class="btn danger" id="rAll" disabled>Wipe everything</button>
+    </div>
+
+    <div class="btn-row"><button class="btn ghost" id="rCancel">Cancel</button></div>
+    <div id="rMsg"></div>`,
+  (root, close) => {
+    const allBtn = root.querySelector('#rAll');
+    root.querySelector('#rCancel').onclick = close;
+    root.querySelector('#rType').oninput = (e) => {
+      allBtn.disabled = e.target.value.trim() !== 'RESET';
+    };
+    root.querySelector('#rBackup').onclick = () => {
+      try {
+        downloadBackup();
+        root.querySelector('#rMsg').innerHTML =
+          '<div class="okbox">Backup downloaded — check your Downloads folder.</div>';
+      } catch (err) {
+        root.querySelector('#rMsg').innerHTML =
+          `<div class="warnbox">Download failed: ${esc(err.message)}. Use Backup → Show text instead.</div>`;
+      }
+    };
+    const run = async (keepPlayers) => {
+      root.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+      root.querySelector('#rMsg').innerHTML = '<div class="okbox">Resetting…</div>';
+      await resetGame(keepPlayers);
+      close();
+    };
+    root.querySelector('#rKeep').onclick = () => run(true);
+    allBtn.onclick = () => run(false);
+  });
+}
+
+/**
+ * The one reset path. Order matters online:
+ *   1. stop polling, so nothing writes old-game data back mid-reset
+ *   2. re-read the roster from the database, so nobody is missed
+ *   3. clear submissions, so week 1 of the new game starts empty
+ *   4. write the new game (same player ids = same rows and logins)
+ */
+async function resetGame(keepPlayers) {
+  clearInterval(pollTimer);
+  pollTimer = null;
+  editing = true;
+  try {
+    let roster = S().players;
+    if (keepPlayers && typeof adapter.loadPlayers === 'function') {
+      try {
+        roster = await adapter.loadPlayers();
+      } catch (err) {
+        return toast('Reset stopped — could not read the players: ' + err.message, true);
+      }
+    }
+    if (typeof adapter.resetSubmissions === 'function') {
+      const cleared = await adapter.resetSubmissions(S().game.currentRound);
+      if (!cleared.ok) toast(cleared.reason, true);
+    }
+    if (!keepPlayers && typeof adapter.clear === 'function' && live) {
+      await adapter.clear();
+    }
+    await store.newGame(keepPlayers ? roster : []);
+    pendingPurchases = [];
+  } finally {
+    editing = false;
+  }
+  render();
+  toast(keepPlayers
+    ? `New game ready — ${S().players.length} player(s) kept. Deal roles when ready.`
+    : 'Everything wiped. Add players to start.');
+}
+
 /* ========================================================== PHASES ====== */
 
 function render() {
@@ -435,10 +567,25 @@ function viewClosed(main) {
 
   const addPlayer = async () => {
     const input = card.querySelector('#newName');
-    const name = input.value.trim();
+    const name = input.value.trim().replace(/\s+/g, ' ');
     if (!name) return;
-    if (activeRoster().some((p) => p.displayName.toLowerCase() === name.toLowerCase())) {
-      return toast('That name is already on the roster.', true);
+    /* Online, check the database rather than this browser's copy. The copy
+       can be stale, and a stale copy is exactly how duplicate rows were made. */
+    await syncRosterFromDatabase();
+    const key = name.toLowerCase();
+    const match = S().players.find(
+      (p) => p.displayName.trim().replace(/\s+/g, ' ').toLowerCase() === key);
+    if (match) {
+      input.value = '';
+      if (match.attendanceStatus !== E.ATTENDANCE.INACTIVE) {
+        render();
+        return toast(`${match.displayName} is already on the roster.`, true);
+      }
+      await commit((d) => {
+        d.players = d.players.map((p) => p.id === match.id
+          ? { ...p, attendanceStatus: E.ATTENDANCE.PRESENT } : p);
+      }, { eventType: 'PLAYER_REJOINED', summary: `${match.displayName} rejoined the roster` });
+      return toast(`${match.displayName} was already set up, so they have been brought back — same login.`);
     }
     await commit((d) => { d.players.push(newPlayer(name, d.game.currentRound)); },
       { eventType: 'PLAYER_ADDED', summary: `${name} added to the roster` });
@@ -1518,15 +1665,10 @@ function viewFinished(main) {
 
   const again = el('div', 'card danger');
   again.innerHTML = `<h2>Start a new game</h2>
-    <p class="hint">Export a backup first if you want to keep this one.</p>
-    <div class="btn-row"><button class="btn danger" id="reset">Reset everything</button></div>`;
+    <p class="hint">Keep the same players and logins, or wipe everything.</p>
+    <div class="btn-row"><button class="btn danger" id="reset">Reset…</button></div>`;
   main.appendChild(again);
-  again.querySelector('#reset').onclick = async () => {
-    if (await confirmAction('Erase this game and start fresh?',
-      'Players, roles, tokens and history are all cleared. This cannot be undone.')) {
-      await store.reset(); render(); toast('New game ready.');
-    }
-  };
+  again.querySelector('#reset').onclick = openResetPanel;
 }
 
 /* ==================================================== PHASE CONTROL ==== */
@@ -1660,8 +1802,35 @@ function openPlayerModal(id) {
     <div class="btn-row">
       <button class="btn primary" id="mSave">Save override</button>
       <button class="btn ghost" id="mCancel">Cancel</button>
+    </div>
+    <h3>Remove</h3>
+    <p class="faint">For duplicates and mistakes only. Deletes the player and their
+      login link. For someone who has just stopped coming, use
+      Attendance → Left permanently instead.</p>
+    <div class="btn-row" style="margin-top:6px">
+      <button class="btn danger sm" id="mRemove">Remove ${esc(p.displayName)}</button>
     </div>`, (root, close) => {
     root.querySelector('#mCancel').onclick = close;
+    root.querySelector('#mRemove').onclick = async () => {
+      close();
+      if (!(await confirmAction(`Remove ${p.displayName}?`,
+        'Deletes this seat and its login link. This cannot be undone.'))) return;
+      /* Database first. If the console dropped them first, a failed delete
+         would leave an orphan row that reappears on the next refresh. */
+      if (typeof adapter.removePlayer === 'function') {
+        const r = await adapter.removePlayer(id);
+        if (!r.ok) return toast('Could not remove: ' + r.reason, true);
+      }
+      await commit((d) => {
+        d.players = d.players.filter((x) => x.id !== id);
+        d.currentActions = (d.currentActions || []).filter(
+          (a) => a.actorId !== id && a.targetId !== id && a.secondaryTargetId !== id);
+        d.currentBallots = (d.currentBallots || []).filter(
+          (b) => b.voterId !== id && b.targetId !== id);
+        d.currentWinners = (d.currentWinners || []).filter((w) => w !== id);
+      }, { eventType: 'PLAYER_REMOVED', summary: `${p.displayName} removed from the roster` });
+      toast(`${p.displayName} removed.`);
+    };
     root.querySelector('#mSave').onclick = async () => {
       const role = root.querySelector('#mRole').value;
       const life = root.querySelector('#mLife').value;
@@ -1919,6 +2088,7 @@ $('btnNext').onclick = advancePhase;
 $('btnBack').onclick = rewindPhase;
 $('btnSettings').onclick = openSettings;
 $('btnBackup').onclick = openBackup;
+$('btnReset').onclick = openResetPanel;
 
 /* A failed write used to be logged to the console and nowhere else, so the
    admin could keep running a session that was never reaching localStorage.

@@ -1,4 +1,4 @@
-/* mafia v0.3.1 | cloud.js | 22 Sep 2026 */
+/* mafia v0.3.2 | cloud.js | 29 Sep 2026 */
 /*
   ONLINE STORAGE + ADMIN LOGIN + PLAYER LOGIN LINKS.
 
@@ -203,6 +203,33 @@ export class SupabaseAdapter {
     const { error } = await this.sb.from('players').delete().eq('id', playerId);
     if (error) return { ok: false, reason: error.message };
     return { ok: true };
+  }
+
+  /**
+   * Wipes every player submission (actions, ballots, purchases, private
+   * results) so a new game cannot read last game's week 1 as its own, and a
+   * Sheriff does not see old findings in their inbox.
+   *
+   * Uses the reset_game() SQL function if installed. If it is not, falls back
+   * to clear_round() for each week played plus a direct private_events
+   * delete, and reports anything that still failed.
+   */
+  async resetSubmissions(lastRound = 0) {
+    const { error } = await this.sb.rpc('reset_game');
+    if (!error) return { ok: true };
+    const problems = [];
+    for (let r = 1; r <= lastRound; r++) {
+      const res = await this.sb.rpc('clear_round', { p_round: r });
+      if (res.error) { problems.push(res.error.message); break; }
+    }
+    const pe = await this.sb.from('private_events').delete().gte('round', 0);
+    if (pe.error) problems.push(pe.error.message);
+    if (!problems.length) return { ok: true };
+    return {
+      ok: false,
+      reason: `reset_game() is not installed (${error.message}) and the fallback ` +
+              `also failed (${problems[0]}). Run reset_game.sql in Supabase.`
+    };
   }
 
   async clear() {

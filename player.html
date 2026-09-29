@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- mafia v0.5 | player.html | 24 Sep 2026 -->
+<!-- mafia v0.6.1 | player.html | 29 Sep 2026 -->
 <!--
   THE PLAYER SCREEN.
 
@@ -240,6 +240,8 @@ let timer = null;
 /* Remembered across refreshes so a change can be announced rather than
    just quietly redrawn. Null until the first successful load. */
 let lastLife = null;
+/* The week number going DOWN means the admin started a new game. */
+let lastRound = null;
 let alertHtml = '';
 
 const alive = () => me && me.life_status === 'ALIVE' && me.attendance_status === 'PRESENT';
@@ -306,6 +308,13 @@ async function refresh() {
   roster = rosterRes.data ?? [];
 
   const r = round();
+  /* New game: everyone is reset to alive. Without this, a player who was a
+     Spirit last game would get a false "You are back" banner. */
+  if (lastRound !== null && r < lastRound) {
+    lastLife = me.life_status;
+    alertHtml = '';
+  }
+  lastRound = r;
   const [aRes, bRes, pRes, iRes] = await Promise.all([
     sb.from('actions').select('*').eq('round', r),
     sb.from('ballots').select('*').eq('round', r),

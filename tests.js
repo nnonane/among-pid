@@ -683,6 +683,36 @@ test('commit does not mutate the previous state object', async () => {
   eq(before.players.length, 0, 'previous snapshot untouched');
 });
 
+test('newGame keeps player ids and wipes their game data', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.init();
+  await store.commit(d => {
+    d.players = makeState([
+      { id: 'm1', role: E.ROLE.MAFIA, tokens: 2, life: E.LIFE.SPIRIT, points: 3 },
+      { id: 'c1', inventory: [newInventoryItem(E.ITEM.EXTRA_VOTE, 1)], flags: { revealAlignmentOnDeath: true } },
+      { id: 'gone', att: E.ATTENDANCE.INACTIVE }
+    ]).players;
+    d.game.currentRound = 5;
+    d.game.settings.resurrectionCost = 4;
+  });
+  const s = await store.newGame();
+  eq(s.players.map(p => p.id).join(), 'm1,c1,gone', 'same ids, same order');
+  eq(s.game.currentRound, 0);
+  eq(s.game.status, E.PHASE.CLOSED);
+  eq(s.game.settings.resurrectionCost, 4, 'settings carried over');
+  const m1 = s.players[0];
+  eq(m1.role, E.ROLE.CIVILIAN); eq(m1.lifeStatus, E.LIFE.ALIVE);
+  eq(m1.rewardTokens, 0); eq(m1.spiritPoints, 0);
+  eq(s.players[1].inventory.length, 0);
+  eq(s.players[1].flags.revealAlignmentOnDeath, undefined);
+  eq(s.players[2].attendanceStatus, E.ATTENDANCE.INACTIVE, 'left players stay left');
+});
+test('newGame accepts a fresh roster', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.init();
+  const s = await store.newGame([{ ...newPlayer('Hunter'), id: 'db1' }]);
+  eq(s.players.length, 1); eq(s.players[0].id, 'db1');
+});
 // ===========================================================================
 // Full-round integration
 // ===========================================================================

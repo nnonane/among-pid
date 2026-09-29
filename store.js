@@ -1,4 +1,4 @@
-/* mafia v0.2.3 | store.js | 22 Sep 2026 */
+/* mafia v0.2.4 | store.js | 29 Sep 2026 */
 /*
   ALL persistence lives here. No game rules. No DOM.
   This is the swappable adapter: replacing the LocalAdapter with a Supabase
@@ -295,6 +295,51 @@ export class Store {
     this.state = blankState();
     await this.persist();
     this.emit();
+  }
+
+  /**
+   * Starts a fresh game WITHOUT throwing the roster away.
+   *
+   * reset() empties the player list, but online the player ROWS stay in the
+   * database (saves never delete). That is what caused the restart bug: the
+   * console showed an empty roster, re-typing a name made a brand-new row
+   * with a new id and no login, and the old rows came back on refresh still
+   * holding last game's roles and Spirit status.
+   *
+   * This keeps every player's id, so their database row and login link are
+   * reused, and wipes only the game data on them. Settings are carried over.
+   *
+   * @param players  optional fresh roster (e.g. re-read from the database);
+   *                 defaults to the roster currently held.
+   */
+  async newGame(players = null) {
+    const prev = this.state;
+    const next = blankState(prev?.game?.name);
+    if (prev?.game?.settings) next.game.settings = { ...prev.game.settings };
+    next.players = (players ?? prev?.players ?? []).map((p) => ({
+      ...p,
+      role: ROLE.CIVILIAN,
+      alignment: ALIGNMENT.GOOD,
+      lifeStatus: LIFE.ALIVE,
+      attendanceStatus: p.attendanceStatus === ATTENDANCE.INACTIVE
+        ? ATTENDANCE.INACTIVE : ATTENDANCE.PRESENT,
+      rewardTokens: 0,
+      spiritPoints: 0,
+      joinedRound: 0,
+      inventory: [],
+      flags: {}
+    }));
+    next.audit = [{
+      id: 'a_' + Math.random().toString(36).slice(2, 10),
+      timestamp: new Date().toISOString(),
+      round: 0,
+      eventType: 'GAME_RESET',
+      summary: `New game started with ${next.players.length} player(s) kept`
+    }];
+    this.state = next;
+    await this.persist();
+    this.emit();
+    return this.state;
   }
 
   // --- Backup -------------------------------------------------------------
