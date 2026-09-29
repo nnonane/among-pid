@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- mafia v0.8 | player.html | 30 Sep 2026 -->
+<!-- mafia v0.9 | player.html | 30 Sep 2026 -->
 <!--
   v0.7: Doctor and Sheriff retired. Only the Mafia have a night action;
   everyone else is a Civilian. A seat still marked Doctor or Sheriff in the
@@ -8,6 +8,8 @@
   counts down on every screen, and an Among Us style board shows who voted
   for whom. Tap a name, confirm, change your mind until time runs out.
   Refreshes every 2.5 seconds while voting (6 seconds otherwise).
+  v0.9: when someone is voted out, everyone sees what role they were.
+  Needs reveal_role.sql run once in Supabase (adds game_phase.eliminated_role).
 -->
 <!--
   THE PLAYER SCREEN.
@@ -139,6 +141,17 @@
   @keyframes vpop{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:none}}
   @media (prefers-reduced-motion:reduce){.vchip{animation:none}}
   @media(max-width:380px){.vboard{grid-template-columns:1fr}}
+  /* v0.9: role reveal */
+  .reveal{text-align:center;padding:20px 16px;margin:4px 0 16px;border-radius:12px;background:#0b1527;border:1px solid #35517c;animation:vpop .35s ease-out}
+  .reveal .rk{font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;color:#64789c}
+  .reveal .rn{font-size:24px;font-weight:800;margin:6px 0 2px}
+  .reveal .rr{font-size:15px;color:#b5c3dc}
+  .reveal .rr strong{font-size:20px;letter-spacing:.02em}
+  .reveal.mafia{border-color:#87393d;background:#2a1418}
+  .reveal.mafia .rr strong{color:#ff8a86}
+  .reveal.civ{border-color:#2d5f41;background:#12301f}
+  .reveal.civ .rr strong{color:#7fe0ae}
+  .reveal.none .rn{color:#93a5c4;font-size:20px}
 </style>
 </head>
 <body>
@@ -345,7 +358,7 @@ async function refresh() {
 
   if (meRes.data && meRes.data.length) me = retire(meRes.data[0]);
   phase = (phaseRes.data && phaseRes.data[0])
-    ?? { phase: 'CLOSED', current_round: 0, public_text: '', winner: '', eliminated_id: '' };
+    ?? { phase: 'CLOSED', current_round: 0, public_text: '', winner: '', eliminated_id: '', eliminated_role: '' };
   roster = rosterRes.data ?? [];
 
   const r = round();
@@ -638,8 +651,7 @@ function paintVote(host, final = false) {
 
   const who = final && phase.eliminated_id ? nameOf(phase.eliminated_id) : null;
   const hint = final
-    ? (who ? `<strong>${esc(who)}</strong> was voted out.` : 'The vote produced no elimination.')
-      + ' Items and the Master can change the final count, so it may not match the names below.'
+    ? 'Items and the Master can change the final count, so it may not match the names below.'
     : !alive() ? 'You are out, so you can watch but not vote.'
     : timeUp ? "Time's up. Hunter is counting the votes."
     : 'Tap a name, then confirm. Everyone can see who you pick. Change it as often as you like until time runs out.';
@@ -674,6 +686,7 @@ function paintVote(host, final = false) {
       <h3>${final ? 'Final votes' : 'Discuss &amp; vote'}</h3>
       ${clock}
     </div>
+    ${final ? revealHtml(who) : ''}
     <p class="hint">${hint}</p>
     ${!final && left !== null && !clockRunning() && !timeUp ? '<div class="note">The clock is paused.</div>' : ''}
     <div class="vboard">${tiles}</div>
@@ -692,6 +705,29 @@ function paintVote(host, final = false) {
   });
   const go = $('vGo');
   if (go) go.onclick = castVote;
+}
+
+/*
+  The big "X was voted out - they were Mafia" banner on the Results screen.
+  eliminated_role comes from the game_phase view and, like eliminated_id, is
+  blank until Hunter tallies - so it can never show early. If reveal_role.sql
+  has not been run yet the column is missing and the banner simply leaves the
+  role off rather than breaking.
+*/
+function revealHtml(who) {
+  if (!who) {
+    return `<div class="reveal none"><div class="rk">Week ${round()} &middot; the vote</div>
+      <div class="rn">No one was voted out</div></div>`;
+  }
+  const role = phase.eliminated_role || '';
+  const label = ROLE_LABEL[role] ?? '';
+  const cls = role === 'MAFIA' ? 'mafia' : role ? 'civ' : '';
+  const isMe = phase.eliminated_id === me.id;
+  return `<div class="reveal ${cls}">
+    <div class="rk">Week ${round()} &middot; voted out</div>
+    <div class="rn">${isMe ? 'You were' : esc(who) + ' was'} voted out</div>
+    ${label ? `<div class="rr">${isMe ? 'You were' : 'They were'} <strong>${esc(label)}</strong></div>` : ''}
+  </div>`;
 }
 
 async function castVote() {

@@ -1,4 +1,4 @@
-/* mafia v0.8 | ui.js | 30 Sep 2026 */
+/* mafia v0.9 | ui.js | 30 Sep 2026 */
 /*
   Rendering and admin controls. Talks to store.js and engine.js only.
   Contains NO game rules — anything that decides an outcome lives in engine.js.
@@ -38,6 +38,10 @@
   vote board on every screen shows who voted for whom. Online, the ballots
   table is the single source of truth - admin corrections are written to it
   too, so every screen and the tally always agree.
+
+  v0.9 reveals the voted-out player's role to every player's screen (via
+  reveal_role.sql). The console already showed it; the final vote board now
+  also tags the eliminated player with their role.
 */
 
 import * as E from './engine.js';
@@ -1373,7 +1377,7 @@ const ballotWeight = (voterId) => {
  * the names of everyone voting for them stacked underneath. Players see the
  * same board on their own screens, minus the weight markers.
  */
-function voteBoard(ballots, candidates, { title = 'Vote board', final = false } = {}) {
+function voteBoard(ballots, candidates, { title = 'Vote board', final = false, out = null } = {}) {
   const card = el('div', 'card');
   const byTarget = new Map();
   for (const b of ballots) {
@@ -1396,6 +1400,8 @@ function voteBoard(ballots, candidates, { title = 'Vote board', final = false } 
       return `<div class="vote-tile${vs.length ? ' has-votes' : ''}${lead ? ' leading' : ''}">
         <div class="vote-head">
           <span class="vote-name">${esc(p.displayName)}</span>
+          ${out && out.id === p.id
+            ? `<span class="badge ${out.role === E.ROLE.MAFIA ? 'mafia' : 'good'}">Out · ${esc(roleLabel(out.role))}</span>` : ''}
           ${voted.has(p.id) ? '<span class="voted-tag">Voted</span>' : ''}
           <span class="vote-count">${vs.length || ''}</span>
         </div>
@@ -1582,7 +1588,7 @@ function viewResults(main) {
       ? `${esc(nameOf(res.eliminated))} is eliminated`
       : 'No elimination'}</div>
     <div class="detail">${res.eliminated
-      ? `They were a <strong>${esc(roleLabel(res.revealedRole))}</strong>.`
+      ? `They were <strong>${esc(roleLabel(res.revealedRole))}</strong> — every player's screen shows this now.`
       : res.tie ? 'The vote was tied.' : 'No eligible target.'}</div>`);
   card.appendChild(rev);
 
@@ -1597,8 +1603,14 @@ function viewResults(main) {
   }
   main.appendChild(card);
 
-  main.appendChild(voteBoard(S().currentBallots || [], present(),
-    { title: 'Final votes', final: true }));
+  /* Keep the voted-out player on the board after Apply elimination turns them
+     into a Spirit, so their tile and role tag do not vanish. */
+  const outP = res.eliminated ? byId(res.eliminated) : null;
+  const boardPlayers = outP && !present().some((p) => p.id === outP.id)
+    ? [...present(), outP] : present();
+  main.appendChild(voteBoard(S().currentBallots || [], boardPlayers,
+    { title: 'Final votes', final: true,
+      out: outP ? { id: outP.id, role: res.revealedRole } : null }));
   if (res.eliminated && byId(res.eliminated)?.lifeStatus === E.LIFE.ALIVE) {
     const apply = el('div', 'card accent');
     apply.innerHTML = `<h2>Apply the elimination</h2>
