@@ -1,4 +1,4 @@
-/* mafia v0.1 | tests.js | 22 Sep 2026 */
+/* mafia v0.2 | tests.js | 30 Sep 2026 */
 /* Disposable test harness. Runs in Node or in the browser via tests.html. */
 
 import * as E from './engine.js';
@@ -63,9 +63,9 @@ const owned = (type, round) => ({
 // ===========================================================================
 suite('Role balance');
 
-test('10 players = 2 Mafia, 1 Doctor, 1 Sheriff', () => {
+test('10 players = 2 Mafia, 8 Civilians', () => {
   const b = E.startingBalance(10);
-  eq(b.mafia, 2); eq(b.doctor, 1); eq(b.sheriff, 1);
+  eq(b.mafia, 2); eq(b.civilian, 8);
 });
 test('12 players = 3 Mafia', () => eq(E.startingBalance(12).mafia, 3));
 test('15 players = 4 Mafia', () => eq(E.startingBalance(15).mafia, 4));
@@ -73,11 +73,26 @@ test('assignment produces exactly the target distribution', () => {
   const players = Array.from({ length: 13 }, (_, i) => newPlayer(`P${i}`));
   const assigned = E.assignStartingRoles(players, E.makeRng(42));
   eq(assigned.filter(p => p.role === E.ROLE.MAFIA).length, 3, 'Mafia count');
-  eq(assigned.filter(p => p.role === E.ROLE.DOCTOR).length, 1, 'Doctor count');
-  eq(assigned.filter(p => p.role === E.ROLE.SHERIFF).length, 1, 'Sheriff count');
-  eq(assigned.filter(p => p.role === E.ROLE.CIVILIAN).length, 8, 'Civilian count');
+  eq(assigned.filter(p => p.role === E.ROLE.CIVILIAN).length, 10, 'Civilian count');
   assert(assigned.every(p => p.alignment === E.alignmentOf(p.role)), 'alignment matches role');
 });
+test('only Mafia and Civilian are ever dealt', () => {
+  for (const n of [5, 10, 12, 15]) {
+    const players = Array.from({ length: n }, (_, i) => newPlayer(`P${i}`));
+    const assigned = E.assignStartingRoles(players, E.makeRng(n));
+    assert(assigned.every(p => p.role === E.ROLE.MAFIA || p.role === E.ROLE.CIVILIAN),
+      `${n} players dealt a retired role`);
+  }
+});
+
+test('late joiners are only ever Mafia or Civilian', () => {
+  const players = Array.from({ length: 10 }, (_, i) => ({ ...newPlayer(`P${i}`), id: `p${i}` }));
+  for (let seed = 0; seed < 50; seed++) {
+    const r = E.suggestLateJoinerRole(players, E.makeRng(seed));
+    assert(r === E.ROLE.MAFIA || r === E.ROLE.CIVILIAN, `seed ${seed} suggested ${r}`);
+  }
+});
+
 test('assignment is deterministic for a given seed', () => {
   const players = Array.from({ length: 11 }, (_, i) => ({ ...newPlayer(`P${i}`), id: `p${i}` }));
   const a = E.assignStartingRoles(players, E.makeRng(7)).map(p => p.role).join();
@@ -90,8 +105,7 @@ suite('Hidden action resolution');
 
 const baseCast = [
   { id: 'm1', role: E.ROLE.MAFIA }, { id: 'm2', role: E.ROLE.MAFIA },
-  { id: 'doc', role: E.ROLE.DOCTOR }, { id: 'sh', role: E.ROLE.SHERIFF },
-  { id: 'c1' }, { id: 'c2' }, { id: 'c3' }
+  { id: 'c1' }, { id: 'c2' }, { id: 'c3' }, { id: 'c4' }, { id: 'c5' }
 ];
 
 test('majority Mafia target is killed', () => {
@@ -117,61 +131,14 @@ test('tied Mafia vote produces a logged random target', () => {
   assert(rng.draws.some(d => d.reason === 'tied Mafia kill vote'), 'random draw was logged');
 });
 
-test('Doctor save blocks the kill', () => {
-  const s = makeState(baseCast);
-  s.currentActions = [
-    { actorId: 'm1', type: E.ACTION.MAFIA_KILL_VOTE, targetId: 'c1' },
-    { actorId: 'doc', type: E.ACTION.DOCTOR_SAVE, targetId: 'c1' }
-  ];
-  const r = E.resolveHiddenActions(s, E.makeRng(1));
-  eq(r.death, null);
-  eq(r.blockedBy, 'DOCTOR');
-  eq(r.publicEvent.type, 'NO_DEATH');
-});
-
-test('Bypass Doctor Save defeats the save', () => {
-  const cast = baseCast.map(p => p.id === 'm1'
-    ? { ...p, inventory: [staged(E.ITEM.BYPASS_DOCTOR_SAVE, 1)] } : p);
-  const s = makeState(cast);
-  s.currentActions = [
-    { actorId: 'm1', type: E.ACTION.MAFIA_KILL_VOTE, targetId: 'c1' },
-    { actorId: 'doc', type: E.ACTION.DOCTOR_SAVE, targetId: 'c1' }
-  ];
-  const r = E.resolveHiddenActions(s, E.makeRng(1));
-  eq(r.death, 'c1');
-});
-
-test('Temporary Immunity blocks the kill even with Bypass', () => {
-  const cast = baseCast.map(p => {
-    if (p.id === 'm1') return { ...p, inventory: [staged(E.ITEM.BYPASS_DOCTOR_SAVE, 1)] };
-    if (p.id === 'c1') return { ...p, inventory: [owned(E.ITEM.TEMP_IMMUNITY, 1)] };
-    return p;
-  });
+test('Temporary Immunity blocks the kill', () => {
+  const cast = baseCast.map(p =>
+    p.id === 'c1' ? { ...p, inventory: [owned(E.ITEM.TEMP_IMMUNITY, 1)] } : p);
   const s = makeState(cast);
   s.currentActions = [{ actorId: 'm1', type: E.ACTION.MAFIA_KILL_VOTE, targetId: 'c1' }];
   const r = E.resolveHiddenActions(s, E.makeRng(1));
   eq(r.death, null);
   eq(r.blockedBy, 'IMMUNITY');
-});
-
-test('Self Save is rejected unless the item is staged', () => {
-  const s = makeState(baseCast);
-  s.currentActions = [
-    { actorId: 'm1', type: E.ACTION.MAFIA_KILL_VOTE, targetId: 'doc' },
-    { actorId: 'doc', type: E.ACTION.DOCTOR_SAVE, targetId: 'doc' }
-  ];
-  eq(E.resolveHiddenActions(s, E.makeRng(1)).death, 'doc');
-});
-
-test('Self Save works when staged', () => {
-  const cast = baseCast.map(p => p.id === 'doc'
-    ? { ...p, inventory: [staged(E.ITEM.SELF_SAVE, 1)] } : p);
-  const s = makeState(cast);
-  s.currentActions = [
-    { actorId: 'm1', type: E.ACTION.MAFIA_KILL_VOTE, targetId: 'doc' },
-    { actorId: 'doc', type: E.ACTION.DOCTOR_SAVE, targetId: 'doc' }
-  ];
-  eq(E.resolveHiddenActions(s, E.makeRng(1)).death, null);
 });
 
 test('Dormant players cannot act or be targeted', () => {
@@ -191,47 +158,16 @@ test('all Mafia absent means no kill', () => {
   eq(E.resolveHiddenActions(s, E.makeRng(1)).death, null);
 });
 
-test('Sheriff finding on Mafia is always SUSPICIOUS', () => {
+test('actions from retired roles are ignored', () => {
   const s = makeState(baseCast);
-  s.currentActions = [{ actorId: 'sh', type: E.ACTION.SHERIFF_INVESTIGATE, targetId: 'm1' }];
-  eq(E.resolveHiddenActions(s, E.makeRng(1)).sheriffResults[0].verdict, 'SUSPICIOUS');
-});
-
-test('INNOCENT is never returned for a Mafia target across many seeds', () => {
-  for (let seed = 0; seed < 200; seed++) {
-    const s = makeState(baseCast);
-    s.currentActions = [{ actorId: 'sh', type: E.ACTION.SHERIFF_INVESTIGATE, targetId: 'm2' }];
-    eq(E.resolveHiddenActions(s, E.makeRng(seed)).sheriffResults[0].verdict, 'SUSPICIOUS',
-      `seed ${seed}`);
-  }
-});
-
-test('non-Mafia can return SUSPICIOUS (inconclusive by design)', () => {
-  let sus = 0;
-  for (let seed = 0; seed < 200; seed++) {
-    const s = makeState(baseCast);
-    s.currentActions = [{ actorId: 'sh', type: E.ACTION.SHERIFF_INVESTIGATE, targetId: 'c1' }];
-    if (E.resolveHiddenActions(s, E.makeRng(seed)).sheriffResults[0].verdict === 'SUSPICIOUS') sus++;
-  }
-  assert(sus > 10 && sus < 120, `false positives within sane range, got ${sus}/200`);
-});
-
-test('Additional Investigation yields two results', () => {
-  const cast = baseCast.map(p => p.id === 'sh'
-    ? { ...p, inventory: [staged(E.ITEM.ADDITIONAL_INVESTIGATION, 1)] } : p);
-  const s = makeState(cast);
-  s.currentActions = [{
-    actorId: 'sh', type: E.ACTION.SHERIFF_INVESTIGATE, targetId: 'c1', secondaryTargetId: 'c2'
-  }];
-  eq(E.resolveHiddenActions(s, E.makeRng(1)).sheriffResults.length, 2);
-});
-
-test('Sheriff results are private events only', () => {
-  const s = makeState(baseCast);
-  s.currentActions = [{ actorId: 'sh', type: E.ACTION.SHERIFF_INVESTIGATE, targetId: 'm1' }];
+  s.currentActions = [
+    { actorId: 'm1', type: E.ACTION.MAFIA_KILL_VOTE, targetId: 'c1' },
+    { actorId: 'c2', type: 'DOCTOR_SAVE', targetId: 'c1' },
+    { actorId: 'c3', type: 'SHERIFF_INVESTIGATE', targetId: 'm1' }
+  ];
   const r = E.resolveHiddenActions(s, E.makeRng(1));
-  assert(r.privateEvents.every(e => e.toPlayerId === 'sh'), 'addressed only to the Sheriff');
-  assert(!JSON.stringify(r.publicEvent).includes('SUSPICIOUS'), 'nothing leaks publicly');
+  eq(r.death, 'c1', 'a stray Doctor save no longer blocks the kill');
+  eq(r.privateEvents.length, 0, 'no investigation result is produced');
 });
 
 // ===========================================================================
@@ -329,34 +265,6 @@ test('Spirits and Dormant players cannot vote or be voted for', () => {
 });
 
 // ===========================================================================
-suite('Doctor succession');
-
-test('random living non-Mafia inherits Doctor', () => {
-  let players = makeState(baseCast).players;
-  players = E.killPlayer(players, 'doc');
-  const r = E.applyDoctorSuccession(players, 'doc', E.makeRng(5));
-  const successor = r.players.find(p => p.id === r.successorId);
-  eq(successor.role, E.ROLE.DOCTOR);
-  assert(successor.alignment === E.ALIGNMENT.GOOD, 'successor is Good');
-  assert(!['m1', 'm2'].includes(r.successorId), 'never a Mafia member');
-});
-
-test('no succession when a non-Doctor dies', () => {
-  const players = makeState(baseCast).players;
-  eq(E.applyDoctorSuccession(players, 'c1', E.makeRng(5)).successorId, null);
-});
-
-test('Doctor post vacant when no eligible successor exists', () => {
-  let s = makeState([
-    { id: 'm1', role: E.ROLE.MAFIA }, { id: 'doc', role: E.ROLE.DOCTOR }
-  ]);
-  const players = E.killPlayer(s.players, 'doc');
-  const r = E.applyDoctorSuccession(players, 'doc', E.makeRng(5));
-  eq(r.successorId, null);
-  eq(r.vacant, true);
-});
-
-// ===========================================================================
 suite('Mafia Legacy');
 
 test('does not trigger while Mafia remain', () => {
@@ -390,7 +298,7 @@ test('only Civilians are eligible for Legacy', () => {
     const s = makeState(baseCast);
     s.players = E.killPlayer(E.killPlayer(s.players, 'm1'), 'm2');
     const r = E.checkMafiaLegacy(s, E.makeRng(seed));
-    assert(['c1', 'c2', 'c3'].includes(r.chosenId), `seed ${seed} chose ${r.chosenId}`);
+    assert(['c1', 'c2', 'c3', 'c4', 'c5'].includes(r.chosenId), `seed ${seed} chose ${r.chosenId}`);
   }
 });
 
@@ -432,7 +340,13 @@ suite('Reward store access');
 
 test('a Civilian cannot buy a Mafia reward', () => {
   const s = makeState([{ id: 'c1', tokens: 5 }]);
-  eq(E.canPurchase(s.players[0], E.ITEM.BYPASS_DOCTOR_SAVE, s.players).ok, false);
+  eq(E.canPurchase(s.players[0], E.ITEM.VOTE_MANIPULATION, s.players).ok, false);
+});
+
+test('stores exist only for Mafia and Civilian', () => {
+  eq(Object.keys(E.STORE).sort().join(), 'CIVILIAN,MAFIA');
+  eq(E.STORE[E.ROLE.CIVILIAN].join(), 'TEMP_IMMUNITY,EXTRA_VOTE,DISCOUNTED_RESURRECTION');
+  eq(E.STORE[E.ROLE.MAFIA].join(), 'VOTE_MANIPULATION,RECRUIT_NEW_MAFIA');
 });
 
 test('purchase blocked without a token', () => {
@@ -469,11 +383,11 @@ test('living players earn no Spirit Points', () => {
 });
 
 test('resurrection costs 3 and returns a Civilian', () => {
-  const s = makeState([{ id: 'doc', role: E.ROLE.DOCTOR, life: E.LIFE.SPIRIT, points: 3 }]);
-  const r = E.resurrect(s, 'doc');
+  const s = makeState([{ id: 'c1', life: E.LIFE.SPIRIT, points: 3 }]);
+  const r = E.resurrect(s, 'c1');
   eq(r.ok, true);
   const p = r.players[0];
-  eq(p.role, E.ROLE.CIVILIAN, 'former Doctor returns as Civilian');
+  eq(p.role, E.ROLE.CIVILIAN, 'returns as Civilian');
   eq(p.alignment, E.ALIGNMENT.GOOD);
   eq(p.lifeStatus, E.LIFE.ALIVE);
   eq(p.spiritPoints, 0);
@@ -582,7 +496,7 @@ test('Mafia see each other but no one else', () => {
   const viewer = s.players.find(p => p.id === 'm1');
   const view = E.visibleStateFor(s, viewer);
   eq(view.players.find(p => p.id === 'm2').role, E.ROLE.MAFIA);
-  eq(view.players.find(p => p.id === 'doc').role, null);
+  eq(view.players.find(p => p.id === 'c4').role, null);
 });
 
 test('player views expose no actions, ballots or audit', () => {
@@ -667,6 +581,28 @@ test('migration backfills fields missing from an old save', async () => {
   assert(Array.isArray(store.get().audit), 'audit array backfilled');
 });
 
+test('old saves: Doctor and Sheriff become Civilian, nothing else changes', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.init();
+  const old = makeState([{ id: 'm1', role: E.ROLE.MAFIA }, { id: 'c1' }]);
+  old.players.push(
+    { ...newPlayer('Doc'), id: 'doc', role: 'DOCTOR', alignment: 'GOOD', rewardTokens: 2 },
+    { ...newPlayer('Sh'), id: 'sh', role: 'SHERIFF', alignment: 'GOOD', lifeStatus: E.LIFE.SPIRIT, spiritPoints: 1 });
+  old.currentActions = [
+    { actorId: 'm1', type: E.ACTION.MAFIA_KILL_VOTE, targetId: 'c1' },
+    { actorId: 'doc', type: 'DOCTOR_SAVE', targetId: 'c1' }
+  ];
+  await store.importJson(JSON.stringify(old));
+  const s = store.get();
+  eq(s.players.find(p => p.id === 'doc').role, E.ROLE.CIVILIAN);
+  eq(s.players.find(p => p.id === 'doc').rewardTokens, 2, 'tokens kept');
+  eq(s.players.find(p => p.id === 'sh').role, E.ROLE.CIVILIAN);
+  eq(s.players.find(p => p.id === 'sh').lifeStatus, E.LIFE.SPIRIT, 'life status kept');
+  eq(s.players.find(p => p.id === 'sh').spiritPoints, 1, 'points kept');
+  eq(s.players.find(p => p.id === 'm1').role, E.ROLE.MAFIA, 'Mafia untouched');
+  eq(s.currentActions.length, 1, 'retired action dropped, Mafia vote kept');
+});
+
 test('a corrupt import is rejected', async () => {
   const store = new Store(new MemoryAdapter());
   await store.init();
@@ -728,15 +664,12 @@ test('kill, minigame award, vote, elimination and Legacy in sequence', async () 
     d.game.status = E.PHASE.HIDDEN_ACTIONS;
     d.currentActions = [
       { actorId: 'm1', type: E.ACTION.MAFIA_KILL_VOTE, targetId: 'c1' },
-      { actorId: 'm2', type: E.ACTION.MAFIA_KILL_VOTE, targetId: 'c1' },
-      { actorId: 'doc', type: E.ACTION.DOCTOR_SAVE, targetId: 'c2' },
-      { actorId: 'sh', type: E.ACTION.SHERIFF_INVESTIGATE, targetId: 'm1' }
+      { actorId: 'm2', type: E.ACTION.MAFIA_KILL_VOTE, targetId: 'c1' }
     ];
   });
 
   const res = E.resolveHiddenActions(store.get(), E.makeRng(store.get().game.rngSeed));
   eq(res.death, 'c1');
-  eq(res.sheriffResults[0].verdict, 'SUSPICIOUS');
 
   // Victim still plays the minigame — death is not announced until after rewards.
   await store.commit(d => {
@@ -753,7 +686,7 @@ test('kill, minigame award, vote, elimination and Legacy in sequence', async () 
   // Vote out both Mafia across two rounds.
   const v = E.resolveVote(store.get(), [
     { voterId: 'c2', targetId: 'm1' }, { voterId: 'c3', targetId: 'm1' },
-    { voterId: 'doc', targetId: 'm1' }, { voterId: 'sh', targetId: 'c3' }
+    { voterId: 'c4', targetId: 'm1' }, { voterId: 'c5', targetId: 'c3' }
   ]);
   eq(v.eliminated, 'm1');
   await store.commit(d => { d.players = E.killPlayer(d.players, 'm1'); });

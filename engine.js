@@ -1,4 +1,9 @@
-/* mafia v0.1 | engine.js | 22 Sep 2026 */
+/* mafia v0.2 | engine.js | 30 Sep 2026 */
+/*
+  v0.2: Doctor and Sheriff retired. Every non-Mafia player is a Civilian.
+  The only night action is the Mafia kill; Temporary Immunity is the only
+  thing that can block it. Everything else is unchanged.
+*/
 /*
   PURE GAME RULES. No DOM. No storage. No side effects.
   Every exported function takes plain data and returns plain data.
@@ -12,10 +17,10 @@
 
 export const ROLE = {
   MAFIA: 'MAFIA',
-  DOCTOR: 'DOCTOR',
-  SHERIFF: 'SHERIFF',
   CIVILIAN: 'CIVILIAN'
 };
+/** Roles that no longer exist. Old saves holding them become Civilian. */
+export const RETIRED_ROLES = ['DOCTOR', 'SHERIFF'];
 
 export const ALIGNMENT = { GOOD: 'GOOD', MAFIA: 'MAFIA' };
 
@@ -55,20 +60,13 @@ export const PHASE_ORDER = [
 ];
 
 export const ACTION = {
-  MAFIA_KILL_VOTE: 'MAFIA_KILL_VOTE',
-  DOCTOR_SAVE: 'DOCTOR_SAVE',
-  SHERIFF_INVESTIGATE: 'SHERIFF_INVESTIGATE'
+  MAFIA_KILL_VOTE: 'MAFIA_KILL_VOTE'
 };
 
 export const ITEM = {
   TEMP_IMMUNITY: 'TEMP_IMMUNITY',
   EXTRA_VOTE: 'EXTRA_VOTE',
   DISCOUNTED_RESURRECTION: 'DISCOUNTED_RESURRECTION',
-  ADDITIONAL_INVESTIGATION: 'ADDITIONAL_INVESTIGATION',
-  REVEAL_ALIGNMENT_ON_DEATH: 'REVEAL_ALIGNMENT_ON_DEATH',
-  DOUBLE_SAVE: 'DOUBLE_SAVE',
-  SELF_SAVE: 'SELF_SAVE',
-  BYPASS_DOCTOR_SAVE: 'BYPASS_DOCTOR_SAVE',
   VOTE_MANIPULATION: 'VOTE_MANIPULATION',
   RECRUIT_NEW_MAFIA: 'RECRUIT_NEW_MAFIA'
 };
@@ -79,14 +77,7 @@ export const STORE = {
     ITEM.EXTRA_VOTE,
     ITEM.DISCOUNTED_RESURRECTION
   ],
-  [ROLE.SHERIFF]: [
-    ITEM.ADDITIONAL_INVESTIGATION,
-    ITEM.TEMP_IMMUNITY,
-    ITEM.REVEAL_ALIGNMENT_ON_DEATH
-  ],
-  [ROLE.DOCTOR]: [ITEM.DOUBLE_SAVE, ITEM.SELF_SAVE],
   [ROLE.MAFIA]: [
-    ITEM.BYPASS_DOCTOR_SAVE,
     ITEM.VOTE_MANIPULATION,
     ITEM.RECRUIT_NEW_MAFIA
   ]
@@ -94,7 +85,6 @@ export const STORE = {
 
 // Admin-configurable. Never hard-code these inline — surface them in settings.
 export const DEFAULT_SETTINGS = {
-  suspiciousFalsePositiveChance: 0.25, // chance a non-Mafia returns SUSPICIOUS
   voteManipulationDirection: 1,        // +1 adds, -1 removes
   spiritPointsAttendance: 1,
   spiritPointsMinigameWin: 3,          // total, not additive
@@ -172,15 +162,19 @@ export const countAliveMafia = (players) =>
 // Role balance
 // ---------------------------------------------------------------------------
 
-/** Starting distribution per the design overview. */
+/**
+ * Starting distribution per the design overview. Mafia counts are unchanged;
+ * everyone who is not Mafia is a Civilian.
+ */
 export function startingBalance(playerCount) {
+  let mafia;
   if (playerCount < 10) {
     // Below the documented range — scale down conservatively.
-    return { mafia: Math.max(1, Math.floor(playerCount / 5)), doctor: 1, sheriff: 1 };
-  }
-  if (playerCount === 10) return { mafia: 2, doctor: 1, sheriff: 1 };
-  if (playerCount <= 13) return { mafia: 3, doctor: 1, sheriff: 1 };
-  return { mafia: 4, doctor: 1, sheriff: 1 };
+    mafia = Math.max(1, Math.floor(playerCount / 5));
+  } else if (playerCount === 10) mafia = 2;
+  else if (playerCount <= 13) mafia = 3;
+  else mafia = 4;
+  return { mafia, civilian: Math.max(playerCount - mafia, 0) };
 }
 
 export function assignStartingRoles(players, rng) {
@@ -189,8 +183,6 @@ export function assignStartingRoles(players, rng) {
   const roles = new Map();
   let i = 0;
   for (let n = 0; n < balance.mafia; n++) roles.set(order[i++], ROLE.MAFIA);
-  for (let n = 0; n < balance.doctor; n++) roles.set(order[i++], ROLE.DOCTOR);
-  for (let n = 0; n < balance.sheriff; n++) roles.set(order[i++], ROLE.SHERIFF);
   while (i < order.length) roles.set(order[i++], ROLE.CIVILIAN);
 
   return players.map((p) => {
@@ -207,16 +199,10 @@ export function suggestLateJoinerRole(players, rng, settings = DEFAULT_SETTINGS)
   const living = players.filter(isAlive);
   const target = startingBalance(living.length + 1);
   const aliveMafia = countAliveMafia(players);
-  const hasDoctor = living.some((p) => p.role === ROLE.DOCTOR);
-  const hasSheriff = living.some((p) => p.role === ROLE.SHERIFF);
-
   const allowed = [ROLE.CIVILIAN];
   if (aliveMafia < Math.min(target.mafia, settings.maxActiveMafiaFromRecruit)) {
     allowed.push(ROLE.MAFIA);
   }
-  if (!hasDoctor) allowed.push(ROLE.DOCTOR);
-  if (!hasSheriff) allowed.push(ROLE.SHERIFF);
-
   return rng.pick(allowed, 'late joiner role');
 }
 
@@ -253,9 +239,6 @@ export function canPurchase(player, rewardType, players, settings = DEFAULT_SETT
       return { ok: false, reason: 'Would exceed maximum active Mafia' };
     }
   }
-  if (rewardType === ITEM.REVEAL_ALIGNMENT_ON_DEATH && player.flags?.revealAlignmentOnDeath) {
-    return { ok: false, reason: 'Already owned' };
-  }
   return { ok: true };
 }
 
@@ -265,10 +248,9 @@ export function canPurchase(player, rewardType, players, settings = DEFAULT_SETT
 
 /**
  * Resolves the hidden-action phase.
- * @returns {{ deaths, savedTarget, mafiaTarget, sheriffResults, publicEvent, privateEvents, log }}
+ * @returns {{ death, blockedBy, savedTarget, mafiaTarget, publicEvent, privateEvents, log }}
  */
 export function resolveHiddenActions(state, rng) {
-  const settings = { ...DEFAULT_SETTINGS, ...(state.game.settings || {}) };
   const round = state.game.currentRound;
   const players = state.players;
   const byId = new Map(players.map((p) => [p.id, p]));
@@ -298,69 +280,21 @@ export function resolveHiddenActions(state, rng) {
     log.push({ step: 'mafiaTarget', chosen: null, note: 'No Mafia ballots submitted' });
   }
 
-  // --- 2. Doctor protection ------------------------------------------------
-  const protectedIds = new Set();
-  for (const a of actions.filter((x) => x.type === ACTION.DOCTOR_SAVE)) {
-    const doctor = byId.get(a.actorId);
-    const selfSave = hasStagedItem(doctor, ITEM.SELF_SAVE, round);
-    if (a.targetId === a.actorId && !selfSave) {
-      log.push({ step: 'doctorSave', rejected: a.targetId, reason: 'Self-save not owned' });
-      continue;
-    }
-    protectedIds.add(a.targetId);
-    if (a.secondaryTargetId && hasStagedItem(doctor, ITEM.DOUBLE_SAVE, round)) {
-      protectedIds.add(a.secondaryTargetId);
-    }
-  }
-  log.push({ step: 'doctorSave', protected: [...protectedIds] });
-
-  // --- 3. Bypass -----------------------------------------------------------
-  const bypassActive = players.some(
-    (p) => p.role === ROLE.MAFIA && isPresent(p) && hasStagedItem(p, ITEM.BYPASS_DOCTOR_SAVE, round)
-  );
-
-  // --- 4. Immunity ---------------------------------------------------------
+  // --- 2. Immunity ---------------------------------------------------------
   const immune = new Set(
     players.filter((p) => hasUsableItem(p, ITEM.TEMP_IMMUNITY, round)).map((p) => p.id)
   );
 
-  // --- 5. Kill outcome -----------------------------------------------------
+  // --- 3. Kill outcome -----------------------------------------------------
   let death = null;
   let blockedBy = null;
   if (mafiaTarget) {
     if (immune.has(mafiaTarget)) blockedBy = 'IMMUNITY';
-    else if (protectedIds.has(mafiaTarget) && !bypassActive) blockedBy = 'DOCTOR';
     else death = mafiaTarget;
   }
-  log.push({ step: 'killOutcome', mafiaTarget, bypassActive, blockedBy, death });
+  log.push({ step: 'killOutcome', mafiaTarget, blockedBy, death });
 
-  // --- 6. Sheriff ----------------------------------------------------------
-  const sheriffResults = [];
-  for (const a of actions.filter((x) => x.type === ACTION.SHERIFF_INVESTIGATE)) {
-    const sheriff = byId.get(a.actorId);
-    const targets = [a.targetId];
-    if (a.secondaryTargetId && hasStagedItem(sheriff, ITEM.ADDITIONAL_INVESTIGATION, round)) {
-      targets.push(a.secondaryTargetId);
-    }
-    for (const tid of targets) {
-      const target = byId.get(tid);
-      if (!target) continue;
-      const isMafia = target.alignment === ALIGNMENT.MAFIA;
-      const verdict = isMafia
-        ? 'SUSPICIOUS'
-        : rng.chance(settings.suspiciousFalsePositiveChance, `sheriff false positive on ${tid}`)
-          ? 'SUSPICIOUS'
-          : 'INNOCENT';
-      sheriffResults.push({ sheriffId: a.actorId, targetId: tid, verdict });
-      privateEvents.push({
-        toPlayerId: a.actorId,
-        type: 'SHERIFF_RESULT',
-        text: `Investigation of ${target.displayName}: ${verdict}.`
-      });
-    }
-  }
-
-  // --- 7. Public event — sealed until after minigame and rewards -----------
+  // --- 4. Public event — sealed until after minigame and rewards -----------
   const victim = death ? byId.get(death) : null;
   const publicEvent = death
     ? {
@@ -377,7 +311,6 @@ export function resolveHiddenActions(state, rng) {
     death,
     blockedBy,
     savedTarget: blockedBy ? mafiaTarget : null,
-    sheriffResults,
     publicEvent,
     privateEvents,
     log,
@@ -464,26 +397,6 @@ export function killPlayer(players, playerId) {
   return players.map((p) =>
     p.id === playerId ? { ...p, lifeStatus: LIFE.SPIRIT } : p
   );
-}
-
-/** A random living, active, non-Mafia player inherits Doctor. */
-export function applyDoctorSuccession(players, deadPlayerId, rng) {
-  const dead = players.find((p) => p.id === deadPlayerId);
-  if (!dead || dead.role !== ROLE.DOCTOR) return { players, successorId: null };
-
-  const candidates = players
-    .filter((p) => isAlive(p) && p.role !== ROLE.MAFIA && p.id !== deadPlayerId)
-    .map((p) => p.id);
-
-  if (!candidates.length) return { players, successorId: null, vacant: true };
-
-  const successorId = rng.pick(candidates, 'doctor succession');
-  return {
-    players: players.map((p) =>
-      p.id === successorId ? { ...p, role: ROLE.DOCTOR, alignment: ALIGNMENT.GOOD } : p
-    ),
-    successorId
-  };
 }
 
 /**

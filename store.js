@@ -1,4 +1,4 @@
-/* mafia v0.2.4 | store.js | 29 Sep 2026 */
+/* mafia v0.2.5 | store.js | 30 Sep 2026 */
 /*
   ALL persistence lives here. No game rules. No DOM.
   This is the swappable adapter: replacing the LocalAdapter with a Supabase
@@ -11,7 +11,8 @@ import {
   LIFE,
   ATTENDANCE,
   PHASE,
-  DEFAULT_SETTINGS
+  DEFAULT_SETTINGS,
+  RETIRED_ROLES
 } from './engine.js';
 
 export const SCHEMA_VERSION = 1;
@@ -102,6 +103,16 @@ export function newPlayer(displayName, joinedRound = 0) {
     passkeyHash: null,
     accessType: 'PLAYER'
   };
+}
+
+/**
+ * Doctor and Sheriff were retired in v0.2 of the engine. Any player still
+ * holding one - from an old save, a backup, or a database row written before
+ * the change - becomes a Civilian. Tokens, points and items are untouched.
+ */
+export function retireRole(p) {
+  if (!p || !RETIRED_ROLES.includes(p.role)) return p;
+  return { ...p, role: ROLE.CIVILIAN, alignment: ALIGNMENT.GOOD };
 }
 
 export function newInventoryItem(rewardType, round) {
@@ -206,12 +217,15 @@ export function migrate(state) {
     };
   });
 
-  state.players = (state.players || []).map((p) => ({
+  state.players = (state.players || []).map((p) => retireRole({
     ...newPlayer(p.displayName),
     ...p,
     inventory: p.inventory || [],
     flags: p.flags || {}
   }));
+  // Actions for retired roles can never resolve; drop them.
+  state.currentActions = (state.currentActions || []).filter(
+    (a) => a.type !== 'DOCTOR_SAVE' && a.type !== 'SHERIFF_INVESTIGATE');
   return state;
 }
 

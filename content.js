@@ -1,4 +1,4 @@
-/* mafia v0.2 | content.js | 22 Sep 2026 */
+/* mafia v0.3 | content.js | 30 Sep 2026 */
 /*
   YOUR FILE. Edit freely — nothing here affects game logic.
   Minigames, labels and display text only.
@@ -97,7 +97,7 @@ export const PHASE_LABEL = {
 export const PHASE_HINT = {
   CLOSED: 'Nothing advances while the session is closed. Open a session to begin the week.',
   ATTENDANCE: 'Mark who is here. Absent players go Dormant and cannot act, vote or be targeted.',
-  HIDDEN_ACTIONS: 'Collect Mafia, Doctor and Sheriff actions privately, then enter them here.',
+  HIDDEN_ACTIONS: 'Collect the Mafia kill votes privately, then enter them here.',
   MINIGAME: 'Play the minigame. The killed player does not know yet, so they still take part.',
   REWARDS: 'Award tokens to winners, then handle any private purchases.',
   RESOLUTION: 'Preview the outcome, then publish. This is when the death is announced.',
@@ -110,8 +110,6 @@ export const PHASE_HINT = {
 
 export const ROLE_LABEL = {
   MAFIA: 'Mafia',
-  DOCTOR: 'Doctor',
-  SHERIFF: 'Sheriff',
   CIVILIAN: 'Civilian'
 };
 
@@ -119,11 +117,6 @@ export const ITEM_LABEL = {
   TEMP_IMMUNITY: 'Temporary Immunity',
   EXTRA_VOTE: 'Extra Vote',
   DISCOUNTED_RESURRECTION: 'Discounted Resurrection',
-  ADDITIONAL_INVESTIGATION: 'Additional Investigation',
-  REVEAL_ALIGNMENT_ON_DEATH: 'Reveal Alignment on Death',
-  DOUBLE_SAVE: 'Double Save',
-  SELF_SAVE: 'Self Save',
-  BYPASS_DOCTOR_SAVE: 'Bypass Doctor Save',
   VOTE_MANIPULATION: 'Vote Manipulation',
   RECRUIT_NEW_MAFIA: 'Recruit New Mafia'
 };
@@ -132,17 +125,11 @@ export const ITEM_HINT = {
   TEMP_IMMUNITY: 'Blocks the kill and the public vote next round.',
   EXTRA_VOTE: 'Adds one weight to one ballot.',
   DISCOUNTED_RESURRECTION: 'Kept through death. Lowers one resurrection to 2 points.',
-  ADDITIONAL_INVESTIGATION: 'A second investigation target for one round.',
-  REVEAL_ALIGNMENT_ON_DEATH: 'Permanent. Publishes alignment on death.',
-  DOUBLE_SAVE: 'Protect two different players for one round.',
-  SELF_SAVE: 'The Doctor may target themselves for one round.',
-  BYPASS_DOCTOR_SAVE: 'The kill ignores Doctor protection for one round.',
   VOTE_MANIPULATION: 'One anonymous vote adjustment.',
   RECRUIT_NEW_MAFIA: 'Convert a living non-Mafia. Blocked above three active Mafia.'
 };
 
 export const SETTING_LABEL = {
-  suspiciousFalsePositiveChance: 'Sheriff false-positive chance',
   voteManipulationDirection: 'Vote Manipulation direction',
   spiritPointsAttendance: 'Spirit Points for attendance',
   spiritPointsMinigameWin: 'Spirit Points for a minigame win',

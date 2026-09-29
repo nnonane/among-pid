@@ -1,4 +1,4 @@
-/* mafia v0.6 | ui.js | 29 Sep 2026 */
+/* mafia v0.7 | ui.js | 30 Sep 2026 */
 /*
   Rendering and admin controls. Talks to store.js and engine.js only.
   Contains NO game rules — anything that decides an outcome lives in engine.js.
@@ -28,10 +28,14 @@
   the same player rows (so logins survive) and wipes only the game data.
   Adding a player checks the live database first, so the same name can no
   longer create a duplicate.
+
+  v0.7 retires the Doctor and Sheriff. Everyone who is not Mafia is a
+  Civilian, the only night action is the Mafia kill, and Temporary Immunity
+  is the only thing that blocks it. Old saves convert automatically.
 */
 
 import * as E from './engine.js';
-import { Store, LocalAdapter, newPlayer, newInventoryItem } from './store.js';
+import { Store, LocalAdapter, newPlayer, newInventoryItem, retireRole } from './store.js';
 import { chooseAdapter, mountStorageButton } from './cloud.js';
 import { Live, SOURCE, mergeActions, mergeBallots } from './live.js';
 import {
@@ -390,7 +394,7 @@ async function syncRosterFromDatabase() {
   let fresh;
   try { fresh = await adapter.loadPlayers(); } catch { return; }
   const known = new Set(S().players.map((p) => p.id));
-  const missing = fresh.filter((p) => !known.has(p.id));
+  const missing = fresh.filter((p) => !known.has(p.id)).map(retireRole);
   if (!missing.length) return;
   await store.commit((d) => { d.players = [...d.players, ...missing]; },
     { eventType: 'ROSTER_SYNCED',
@@ -545,7 +549,7 @@ function viewClosed(main) {
   if (!started) {
     const b = E.startingBalance(Math.max(count, 1));
     note.textContent = count
-      ? `${count} players → ${b.mafia} Mafia, ${b.doctor} Doctor, ${b.sheriff} Sheriff, ${Math.max(count - b.mafia - b.doctor - b.sheriff, 0)} Civilian.`
+      ? `${count} players → ${b.mafia} Mafia, ${b.civilian} Civilian.`
       : 'Add at least 10 players for the documented balance.';
   } else {
     note.textContent = 'New players joining mid-game receive a balance-based role on their first session.';
@@ -752,13 +756,12 @@ function viewHiddenActions(main) {
   intro.innerHTML = `
     <h2>Collect hidden actions</h2>
     <p class="hint">${esc(PHASE_HINT.HIDDEN_ACTIONS)}</p>
-    <div class="warnbox">Players with a role submit from their own screen. Anything below
-      is a fallback — use it for anyone who cannot log in, and take it privately.</div>`;
+    <div class="warnbox">Mafia submit from their own screen; Civilians have no night action.
+      Anything below is a fallback — use it for anyone who cannot log in, and take it privately.</div>`;
   main.appendChild(intro);
 
   // Who is expected to submit something tonight.
-  const actors = present().filter((p) =>
-    [E.ROLE.MAFIA, E.ROLE.DOCTOR, E.ROLE.SHERIFF].includes(p.role));
+  const actors = present().filter((p) => p.role === E.ROLE.MAFIA);
   const haveActions = new Set(
     (S().currentActions || []).filter((a) => a.targetId).map((a) => a.actorId));
   main.appendChild(liveBanner(actors, haveActions, 'action'));
@@ -792,90 +795,8 @@ function viewHiddenActions(main) {
       mCard.appendChild(el('p', 'faint',
         'Current tally: ' + entries.map(([id, n]) => `${esc(nameOf(id))} ${n}`).join(' · ')));
     }
-
-    // Bypass staging
-    for (const m of mafia) {
-      if (ownsUsable(m, E.ITEM.BYPASS_DOCTOR_SAVE) || isStaged(m, E.ITEM.BYPASS_DOCTOR_SAVE)) {
-        mCard.appendChild(stageToggle(m, E.ITEM.BYPASS_DOCTOR_SAVE));
-      }
-    }
   }
   main.appendChild(mCard);
-
-  // --- Doctor ------------------------------------------------------------
-  const doctors = present().filter((p) => p.role === E.ROLE.DOCTOR);
-  const dCard = el('div', 'card private');
-  dCard.innerHTML = `<h2>Doctor protection</h2>
-    <p class="hint">Blocks the Mafia kill unless a Bypass is in play.</p>`;
-  if (!doctors.length) {
-    dCard.appendChild(el('div', 'warnbox', 'No Doctor present — the ability goes unused this week.'));
-  } else {
-    for (const doc of doctors) {
-      const cur = actionBy(doc.id);
-      const selfOk = isStaged(doc, E.ITEM.SELF_SAVE);
-      const dbl = isStaged(doc, E.ITEM.DOUBLE_SAVE);
-      const row = el('div', 'action-row' + (cur?.targetId ? ' submitted' : ''));
-      row.innerHTML = `
-        <div class="who">${esc(doc.displayName)}<small>Doctor</small></div>
-        ${targetSelect('t', cur?.targetId, { exclude: selfOk ? [] : [doc.id], blank: '— no save —' })}
-        <span class="badge ${cur?.targetId ? 'alive' : 'out'}">${sourceLabel(cur)}</span>`;
-      row.querySelector('select').onchange = (e) =>
-        setAction(doc.id, E.ACTION.DOCTOR_SAVE, e.target.value);
-      dCard.appendChild(row);
-
-      if (dbl) {
-        const row2 = el('div', 'action-row', `
-          <div class="who">Second save<small>Double Save</small></div>
-          ${targetSelect('t2', cur?.secondaryTargetId, { exclude: [cur?.targetId] })}
-          <span class="badge good">Active</span>`);
-        row2.querySelector('select').onchange = (e) =>
-          setAction(doc.id, E.ACTION.DOCTOR_SAVE, cur?.targetId, e.target.value);
-        dCard.appendChild(row2);
-      }
-
-      for (const item of [E.ITEM.SELF_SAVE, E.ITEM.DOUBLE_SAVE]) {
-        if (ownsUsable(doc, item) || isStaged(doc, item)) dCard.appendChild(stageToggle(doc, item));
-      }
-    }
-  }
-  main.appendChild(dCard);
-
-  // --- Sheriff -----------------------------------------------------------
-  const sheriffs = present().filter((p) => p.role === E.ROLE.SHERIFF);
-  const sCard = el('div', 'card private');
-  sCard.innerHTML = `<h2>Sheriff investigation</h2>
-    <p class="hint">Innocent is always truthful. Suspicious proves nothing — say so when you deliver it.</p>`;
-  if (!sheriffs.length) {
-    sCard.appendChild(el('div', 'warnbox', 'No Sheriff present — the ability goes unused this week.'));
-  } else {
-    for (const sh of sheriffs) {
-      const cur = actionBy(sh.id);
-      const extra = isStaged(sh, E.ITEM.ADDITIONAL_INVESTIGATION);
-      const row = el('div', 'action-row' + (cur?.targetId ? ' submitted' : ''));
-      row.innerHTML = `
-        <div class="who">${esc(sh.displayName)}<small>Sheriff</small></div>
-        ${targetSelect('t', cur?.targetId, { exclude: [sh.id], blank: '— no investigation —' })}
-        <span class="badge ${cur?.targetId ? 'alive' : 'out'}">${sourceLabel(cur)}</span>`;
-      row.querySelector('select').onchange = (e) =>
-        setAction(sh.id, E.ACTION.SHERIFF_INVESTIGATE, e.target.value);
-      sCard.appendChild(row);
-
-      if (extra) {
-        const row2 = el('div', 'action-row', `
-          <div class="who">Second target<small>Additional Investigation</small></div>
-          ${targetSelect('t2', cur?.secondaryTargetId, { exclude: [sh.id, cur?.targetId] })}
-          <span class="badge good">Active</span>`);
-        row2.querySelector('select').onchange = (e) =>
-          setAction(sh.id, E.ACTION.SHERIFF_INVESTIGATE, cur?.targetId, e.target.value);
-        sCard.appendChild(row2);
-      }
-
-      if (ownsUsable(sh, E.ITEM.ADDITIONAL_INVESTIGATION) || isStaged(sh, E.ITEM.ADDITIONAL_INVESTIGATION)) {
-        sCard.appendChild(stageToggle(sh, E.ITEM.ADDITIONAL_INVESTIGATION));
-      }
-    }
-  }
-  main.appendChild(sCard);
 }
 
 function stageToggle(player, itemType) {
@@ -1228,11 +1149,7 @@ async function purchase(playerId, itemType) {
     d.players = d.players.map((x) => {
       if (x.id !== playerId) return x;
       const next = { ...x, rewardTokens: x.rewardTokens - 1 };
-      if (itemType === E.ITEM.REVEAL_ALIGNMENT_ON_DEATH) {
-        next.flags = { ...(x.flags || {}), revealAlignmentOnDeath: true };
-      } else {
-        next.inventory = [...(x.inventory || []), newInventoryItem(itemType, round)];
-      }
+      next.inventory = [...(x.inventory || []), newInventoryItem(itemType, round)];
       return next;
     });
   }, { eventType: 'PURCHASE', actorId: playerId,
@@ -1263,15 +1180,9 @@ function viewResolution(main) {
         <div class="${res.death ? 'warnbox' : 'okbox'}">
           ${res.death
             ? `<strong>${esc(nameOf(res.death))}</strong> will be killed.`
-            : res.blockedBy === 'DOCTOR' ? 'No death — the Doctor saved the target.'
             : res.blockedBy === 'IMMUNITY' ? 'No death — the target was immune.'
             : 'No death this week.'}
         </div>
-        ${res.sheriffResults.length ? `<h3>Sheriff results — deliver privately</h3>
-          <table><tbody>${res.sheriffResults.map((r) => `<tr>
-            <td>${esc(nameOf(r.sheriffId))} investigated <strong>${esc(nameOf(r.targetId))}</strong></td>
-            <td><span class="badge ${r.verdict === 'INNOCENT' ? 'good' : 'mafia'}">${r.verdict}</span></td>
-          </tr>`).join('')}</tbody></table>` : ''}
         <div class="btn-row">
           <button class="btn primary" id="publish">Publish this outcome</button>
           <button class="btn ghost" id="redo">Discard preview</button>
@@ -1296,24 +1207,17 @@ function viewResolution(main) {
       ? `<div class="detail">Alignment revealed: ${esc(pending.alignment)}</div>` : ''}`);
   card.appendChild(rev);
   card.appendChild(el('p', 'faint',
-    'Deliver any Sheriff results privately now, then advance to the Master phase.'));
+    'Advance to the Master phase when ready.'));
   main.appendChild(card);
 }
 
 async function publishResolution(res) {
-  const rngSucc = rngFor('succession');
   await commit((d) => {
     d.pendingPublicEvent = res.publicEvent;
     d.privateEvents = [...(d.privateEvents || []), ...res.privateEvents];
 
     if (res.death) {
       d.players = E.killPlayer(d.players, res.death);
-      const dead = d.players.find((p) => p.id === res.death);
-      if (dead?.role === E.ROLE.DOCTOR) {
-        const succ = E.applyDoctorSuccession(d.players, res.death, rngSucc);
-        d.players = succ.players;
-        if (succ.successorId) d.pendingSuccessorId = succ.successorId;
-      }
     }
 
     // Consume staged and expiring items.
@@ -1330,9 +1234,9 @@ async function publishResolution(res) {
     trackDiff: true
   });
 
-  /* Deliver the Sheriff's finding to the Sheriff's own screen. It is still
-     shown in the preview above, so if this write fails the result is not
-     lost — you just read it out privately the old way. */
+  /* Delivers anything addressed to one player to their own screen. With the
+     Sheriff retired the engine produces none, but the path is kept so a
+     future private result needs no plumbing. */
   if (live && res.privateEvents?.length) {
     const sent = await live.pushPrivateEvents(S().game.currentRound, res.privateEvents);
     if (!sent.ok) {
@@ -1342,12 +1246,6 @@ async function publishResolution(res) {
 
   // Legacy may fire if that death removed the last Mafia.
   await runLegacyAndEndgame();
-
-  const succ = S().pendingSuccessorId;
-  if (succ) {
-    toast(`${nameOf(succ)} has inherited the Doctor role — tell them privately.`);
-    await store.commit((d) => { d.pendingSuccessorId = null; });
-  }
 }
 
 async function runLegacyAndEndgame() {
@@ -1593,31 +1491,18 @@ function viewResults(main) {
   if (res.eliminated && byId(res.eliminated)?.lifeStatus === E.LIFE.ALIVE) {
     const apply = el('div', 'card accent');
     apply.innerHTML = `<h2>Apply the elimination</h2>
-      <p class="hint">This commits the death, runs Doctor succession and checks Legacy and victory.</p>
+      <p class="hint">This commits the death and checks Legacy and victory.</p>
       <div class="btn-row"><button class="btn primary" id="applyEl">Apply elimination</button></div>`;
     main.appendChild(apply);
 
     apply.querySelector('#applyEl').onclick = async () => {
-      const rngSucc = rngFor('vote-succession');
       await commit((d) => {
         d.players = E.killPlayer(d.players, res.eliminated);
-        const dead = d.players.find((p) => p.id === res.eliminated);
-        if (dead?.role === E.ROLE.DOCTOR) {
-          const s = E.applyDoctorSuccession(d.players, res.eliminated, rngSucc);
-          d.players = s.players;
-          if (s.successorId) d.pendingSuccessorId = s.successorId;
-        }
       }, { eventType: 'ELIMINATION',
            summary: `${nameOf(res.eliminated)} was voted out (${roleLabel(res.revealedRole)})`,
            trackDiff: true });
 
       await runLegacyAndEndgame();
-
-      const succ = S().pendingSuccessorId;
-      if (succ) {
-        toast(`${nameOf(succ)} has inherited the Doctor role — tell them privately.`);
-        await store.commit((d) => { d.pendingSuccessorId = null; });
-      }
     };
   } else {
     main.appendChild(el('div', 'card', `<h2>Ready to close</h2>
@@ -1845,7 +1730,7 @@ function openPlayerModal(id) {
 function openSettings() {
   const s = settings();
   const g = S().game;
-  const numeric = ['suspiciousFalsePositiveChance', 'spiritPointsAttendance',
+  const numeric = ['spiritPointsAttendance',
     'spiritPointsMinigameWin', 'resurrectionCost', 'resurrectionDiscountedCost',
     'maxActiveMafiaFromRecruit'];
 
@@ -1853,7 +1738,7 @@ function openSettings() {
     <h2>Settings</h2>
     <p class="hint">Defaults follow the design document. Change these only deliberately.</p>
     ${numeric.map((k) => `<label class="field"><span>${esc(SETTING_LABEL[k])}</span>
-      <input type="number" step="${k === 'suspiciousFalsePositiveChance' ? '0.05' : '1'}"
+      <input type="number" step="1"
         min="0" data-set="${k}" value="${s[k]}"></label>`).join('')}
     <label class="field"><span>${esc(SETTING_LABEL.voteManipulationDirection)}</span>
       <select data-set="voteManipulationDirection">

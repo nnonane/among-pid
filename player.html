@@ -1,5 +1,10 @@
 <!DOCTYPE html>
-<!-- mafia v0.6.2 | player.html | 29 Sep 2026 -->
+<!-- mafia v0.7 | player.html | 30 Sep 2026 -->
+<!--
+  v0.7: Doctor and Sheriff retired. Only the Mafia have a night action;
+  everyone else is a Civilian. A seat still marked Doctor or Sheriff in the
+  database is shown and treated as Civilian.
+-->
 <!--
   THE PLAYER SCREEN.
 
@@ -167,18 +172,13 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g,
 /* --------------------------------------------------------------- text -- */
 
 const ROLE_LABEL = {
-  MAFIA: 'Mafia', DOCTOR: 'Doctor', SHERIFF: 'Sheriff', CIVILIAN: 'Civilian'
+  MAFIA: 'Mafia', CIVILIAN: 'Civilian'
 };
 
 const ITEM_LABEL = {
   TEMP_IMMUNITY: 'Temporary Immunity',
   EXTRA_VOTE: 'Extra Vote',
   DISCOUNTED_RESURRECTION: 'Discounted Resurrection',
-  ADDITIONAL_INVESTIGATION: 'Additional Investigation',
-  REVEAL_ALIGNMENT_ON_DEATH: 'Reveal Alignment on Death',
-  DOUBLE_SAVE: 'Double Save',
-  SELF_SAVE: 'Self Save',
-  BYPASS_DOCTOR_SAVE: 'Bypass Doctor Save',
   VOTE_MANIPULATION: 'Vote Manipulation',
   RECRUIT_NEW_MAFIA: 'Recruit New Mafia'
 };
@@ -187,27 +187,22 @@ const ITEM_HINT = {
   TEMP_IMMUNITY: 'Blocks the kill and the public vote next round.',
   EXTRA_VOTE: 'Adds one weight to one ballot.',
   DISCOUNTED_RESURRECTION: 'Kept through death. Lowers one resurrection to 2 points.',
-  ADDITIONAL_INVESTIGATION: 'A second investigation target for one round.',
-  REVEAL_ALIGNMENT_ON_DEATH: 'Permanent. Publishes alignment on death.',
-  DOUBLE_SAVE: 'Protect two different players for one round.',
-  SELF_SAVE: 'You may target yourself for one round.',
-  BYPASS_DOCTOR_SAVE: 'The kill ignores Doctor protection for one round.',
   VOTE_MANIPULATION: 'One anonymous vote adjustment.',
   RECRUIT_NEW_MAFIA: 'Convert a living non-Mafia. Blocked above three active Mafia.'
 };
 
 const STORE = {
   CIVILIAN: ['TEMP_IMMUNITY', 'EXTRA_VOTE', 'DISCOUNTED_RESURRECTION'],
-  SHERIFF:  ['ADDITIONAL_INVESTIGATION', 'TEMP_IMMUNITY', 'REVEAL_ALIGNMENT_ON_DEATH'],
-  DOCTOR:   ['DOUBLE_SAVE', 'SELF_SAVE'],
-  MAFIA:    ['BYPASS_DOCTOR_SAVE', 'VOTE_MANIPULATION', 'RECRUIT_NEW_MAFIA']
+  MAFIA:    ['VOTE_MANIPULATION', 'RECRUIT_NEW_MAFIA']
 };
 
 const ACTION_FOR = {
-  MAFIA:   'MAFIA_KILL_VOTE',
-  DOCTOR:  'DOCTOR_SAVE',
-  SHERIFF: 'SHERIFF_INVESTIGATE'
+  MAFIA:   'MAFIA_KILL_VOTE'
 };
+/* Retired roles. A row not yet converted in the database reads as Civilian. */
+const RETIRED = ['DOCTOR', 'SHERIFF'];
+const retire = (row) => (row && RETIRED.includes(row.role))
+  ? { ...row, role: 'CIVILIAN', alignment: 'GOOD' } : row;
 
 const PHASE_ORDER=['ATTENDANCE','HIDDEN_ACTIONS','MINIGAME','REWARDS','RESOLUTION','MASTER','DISCUSSION','VOTING','RESULTS'];
 const PHASE_SHORT={ATTENDANCE:'Start',HIDDEN_ACTIONS:'Actions',MINIGAME:'Game',REWARDS:'Rewards',RESOLUTION:'Result',MASTER:'Master',DISCUSSION:'Talk',VOTING:'Vote',RESULTS:'End'};
@@ -277,7 +272,7 @@ async function load() {
     return fail('You are signed in, but no seat is linked to this email yet. '
               + 'Ask Hunter to add it to your player.');
   }
-  me = rows[0];
+  me = retire(rows[0]);
   lastLife = me.life_status;
 
   $('loginCard').classList.add('hide');
@@ -307,7 +302,7 @@ async function refresh() {
     sb.from('roster').select('id, display_name, life_status').order('display_name')
   ]);
 
-  if (meRes.data && meRes.data.length) me = meRes.data[0];
+  if (meRes.data && meRes.data.length) me = retire(meRes.data[0]);
   phase = (phaseRes.data && phaseRes.data[0])
     ?? { phase: 'CLOSED', current_round: 0, public_text: '', winner: '', eliminated_id: '' };
   roster = rosterRes.data ?? [];
@@ -465,21 +460,11 @@ function paintAction(host) {
   }
 
   const label = {
-    MAFIA_KILL_VOTE:     ['Choose your kill target',
-      'Every active Mafia picks one. Majority decides; a tie is broken at random.'],
-    DOCTOR_SAVE:         ['Choose who to protect',
-      'Blocks the Mafia kill unless a Bypass is in play.'],
-    SHERIFF_INVESTIGATE: ['Choose who to investigate',
-      'Innocent is always truthful. Suspicious proves nothing.']
+    MAFIA_KILL_VOTE: ['Choose your kill target',
+      'Every active Mafia picks one. Majority decides; a tie is broken at random.']
   }[type];
 
-  const allowSelf = me.role === 'DOCTOR' && owns('SELF_SAVE');
-  const second =
-    (me.role === 'DOCTOR'  && owns('DOUBLE_SAVE'))              ? 'Second player to protect' :
-    (me.role === 'SHERIFF' && owns('ADDITIONAL_INVESTIGATION')) ? 'Second player to investigate' : null;
-
-  const pool = roster.filter((r) => r.life_status === 'ALIVE'
-    && (allowSelf || r.id !== me.id));
+  const pool = roster.filter((r) => r.life_status === 'ALIVE' && r.id !== me.id);
 
   const done = !!myAction;
   host.innerHTML = card('act', `
@@ -490,8 +475,6 @@ function paintAction(host) {
       You can change it until Hunter moves on.</div>` : ''}
     <label>Target</label>
     <select id="aT">${optionList(pool, myAction?.target_id)}</select>
-    ${second ? `<label>${esc(second)}</label>
-       <select id="aT2">${optionList(pool, myAction?.secondary_target_id)}</select>` : ''}
     <button id="aGo">${done ? 'Update my choice' : 'Submit'}</button>
     <div id="aMsg"></div>`);
 
@@ -500,7 +483,6 @@ function paintAction(host) {
 
 async function submitAction(type) {
   const target = $('aT').value;
-  const second = $('aT2') ? $('aT2').value : null;
   if (!target) return say('aMsg', 'Pick someone first.', true);
 
   busy = true;
@@ -509,7 +491,7 @@ async function submitAction(type) {
     actor_id: me.id,
     type,
     target_id: target,
-    secondary_target_id: second || null
+    secondary_target_id: null
   }, { onConflict: 'round,actor_id' });
   busy = false;
 
