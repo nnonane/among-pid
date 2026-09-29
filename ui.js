@@ -1,4 +1,4 @@
-/* mafia v0.7 | ui.js | 30 Sep 2026 */
+/* mafia v0.8 | ui.js | 30 Sep 2026 */
 /*
   Rendering and admin controls. Talks to store.js and engine.js only.
   Contains NO game rules — anything that decides an outcome lives in engine.js.
@@ -32,6 +32,12 @@
   v0.7 retires the Doctor and Sheriff. Everyone who is not Mafia is a
   Civilian, the only night action is the Mafia kill, and Temporary Immunity
   is the only thing that blocks it. Old saves convert automatically.
+
+  v0.8 merges Discussion and Voting into one "Discuss & vote" phase on a
+  shared timer (5 minutes by default, in Settings). Ballots are public: a
+  vote board on every screen shows who voted for whom. Online, the ballots
+  table is the single source of truth - admin corrections are written to it
+  too, so every screen and the tally always agree.
 */
 
 import * as E from './engine.js';
@@ -186,7 +192,11 @@ async function pollNow({ silent = true } = {}) {
   }
 
   if (phase === E.PHASE.VOTING) {
-    const merged = mergeBallots(S().currentBallots || [], await live.fetchBallots(round));
+    /* Online, the ballots table IS the vote. Admin corrections are written
+       there as well (setBallot), so there is nothing to merge - just mirror
+       it. A failed read keeps what we have rather than wiping the board. */
+    const incoming = await live.fetchBallots(round);
+    const merged = live.lastError ? (S().currentBallots || []) : incoming;
     if (!same(merged, S().currentBallots || [])) {
       await store.commit((d) => { d.currentBallots = merged; });
       changed = true;
@@ -218,7 +228,7 @@ function startPolling() {
        registered, and it cost the Doctor a token. */
     if (editing) return;
     if (await pollNow()) render();
-  }, 5000);
+  }, S().game.status === E.PHASE.VOTING ? 3000 : 5000);
 }
 
 /**
@@ -502,6 +512,8 @@ async function resetGame(keepPlayers) {
 /* ========================================================== PHASES ====== */
 
 function render() {
+  clearInterval(clockHandle);
+  clockHandle = null;
   renderChrome();
   startPolling();
   const main = $('main');
@@ -515,7 +527,6 @@ function render() {
     [E.PHASE.REWARDS]: viewRewards,
     [E.PHASE.RESOLUTION]: viewResolution,
     [E.PHASE.MASTER]: viewMaster,
-    [E.PHASE.DISCUSSION]: viewDiscussion,
     [E.PHASE.VOTING]: viewVoting,
     [E.PHASE.RESULTS]: viewResults,
     [E.PHASE.FINISHED]: viewFinished
@@ -1308,88 +1319,168 @@ function viewMaster(main) {
   };
 }
 
-/* ------------------------------------------------------ DISCUSSION ----- */
+/* -------------------------------------------------- DISCUSS & VOTE ----- */
+/*
+  One phase, one clock. Everyone talks and votes whenever they are ready.
+  The clock lives in state (voteTimer) and, online, in the vote_timer table
+  so every player screen counts down to the same moment.
+    running: { round, endsAt: ISO time, remaining }
+    paused:  { round, endsAt: null,     remaining: seconds left }
+*/
 
-let timerHandle = null;
+let clockHandle = null;
 
-function viewDiscussion(main) {
-  const card = el('div', 'card accent');
-  card.innerHTML = `
-    <h2>Discussion</h2>
-    <p class="hint">${esc(PHASE_HINT.DISCUSSION)}</p>
-    <div class="timer" id="clock">07:00</div>
-    <div class="btn-row" style="justify-content:center">
-      <button class="btn primary" id="startT">Start</button>
-      <button class="btn" id="pauseT">Pause</button>
-      <button class="btn ghost" id="resetT">Reset</button>
-      <select id="mins" style="width:auto">
-        <option value="6">6 min</option><option value="7" selected>7 min</option>
-        <option value="8">8 min</option><option value="10">10 min</option>
-      </select>
-    </div>`;
-  main.appendChild(card);
+const voteSeconds = () => Math.max(60, Math.round((Number(settings().voteMinutes) || 5) * 60));
 
-  let remaining = 7 * 60;
-  const clock = card.querySelector('#clock');
-  const paint = () => {
-    const m = String(Math.floor(remaining / 60)).padStart(2, '0');
-    const s = String(remaining % 60).padStart(2, '0');
-    clock.textContent = `${m}:${s}`;
-  };
-  const stop = () => { clearInterval(timerHandle); timerHandle = null; };
+function timerLeft(t = S().voteTimer) {
+  if (!t || t.round !== S().game.currentRound) return voteSeconds();
+  if (t.endsAt) return Math.max(0, Math.ceil((Date.parse(t.endsAt) - Date.now()) / 1000));
+  return Math.max(0, t.remaining ?? voteSeconds());
+}
 
-  card.querySelector('#startT').onclick = () => {
-    if (timerHandle) return;
-    timerHandle = setInterval(() => {
-      remaining = Math.max(0, remaining - 1);
-      paint();
-      if (remaining === 0) { stop(); toast('Discussion time is up.'); }
-    }, 1000);
-  };
-  card.querySelector('#pauseT').onclick = stop;
-  card.querySelector('#resetT').onclick = () => {
-    stop(); remaining = Number(card.querySelector('#mins').value) * 60; paint();
-  };
-  card.querySelector('#mins').onchange = (e) => {
-    stop(); remaining = Number(e.target.value) * 60; paint();
-  };
-  paint();
+const fmtClock = (sec) =>
+  `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
 
-  const summary = S().pendingPublicEvent;
-  if (summary) {
-    main.appendChild(el('div', 'card',
-      `<h2>This week's public result</h2><p class="hint">${esc(summary.text)}</p>`));
+async function setVoteTimer({ endsAt = null, remaining }) {
+  const round = S().game.currentRound;
+  const t = { round, endsAt, remaining };
+  await commitQuiet((d) => { d.voteTimer = t; });
+  if (live) {
+    const r = await live.pushVoteTimer(round, t);
+    if (!r.ok) toast(`Timer not shared with players (${r.reason}). Run voting.sql in Supabase.`, true);
   }
 }
 
-/* ---------------------------------------------------------- VOTING ----- */
+const startVoteTimer = (secs = timerLeft()) =>
+  setVoteTimer({ endsAt: new Date(Date.now() + secs * 1000).toISOString(), remaining: secs });
+const pauseVoteTimer = () => setVoteTimer({ endsAt: null, remaining: timerLeft() });
+const resetVoteTimer = () => setVoteTimer({ endsAt: null, remaining: voteSeconds() });
+const addVoteTime = (secs) => {
+  const t = S().voteTimer;
+  const left = timerLeft() + secs;
+  return t?.endsAt ? startVoteTimer(left) : setVoteTimer({ endsAt: null, remaining: left });
+};
+
+/** Weight a ballot really carries. Shown to the admin only. */
+const ballotWeight = (voterId) => {
+  const p = byId(voterId);
+  return 1 + (p && isStaged(p, E.ITEM.EXTRA_VOTE) ? 1 : 0)
+           + (S().currentMaster?.doubleVotePlayerId === voterId ? 1 : 0);
+};
+
+/**
+ * The Among Us style board: one tile per player who can be voted for, with
+ * the names of everyone voting for them stacked underneath. Players see the
+ * same board on their own screens, minus the weight markers.
+ */
+function voteBoard(ballots, candidates, { title = 'Vote board', final = false } = {}) {
+  const card = el('div', 'card');
+  const byTarget = new Map();
+  for (const b of ballots) {
+    if (!b.targetId) continue;
+    if (!byTarget.has(b.targetId)) byTarget.set(b.targetId, []);
+    byTarget.get(b.targetId).push(b.voterId);
+  }
+  const voted = new Set(ballots.map((b) => b.voterId));
+  const top = Math.max(0, ...[...byTarget.values()].map((v) => v.length));
+
+  card.innerHTML = `
+    <h2>${esc(title)}
+      <span class="badge ${voted.size >= candidates.length ? 'alive' : 'dormant'}">${voted.size} of ${candidates.length} voted</span></h2>
+    <p class="hint">${final
+      ? 'Final ballots. The result above includes hidden weights, so it can differ from a simple count.'
+      : 'This is what every player sees. The ×2 markers are hidden weights — only you can see them.'}</p>
+    <div class="vote-board">${candidates.map((p) => {
+      const vs = byTarget.get(p.id) || [];
+      const lead = vs.length && vs.length === top;
+      return `<div class="vote-tile${vs.length ? ' has-votes' : ''}${lead ? ' leading' : ''}">
+        <div class="vote-head">
+          <span class="vote-name">${esc(p.displayName)}</span>
+          ${voted.has(p.id) ? '<span class="voted-tag">Voted</span>' : ''}
+          <span class="vote-count">${vs.length || ''}</span>
+        </div>
+        <div class="vote-chips">${vs.length
+          ? vs.map((v) => {
+              const w = ballotWeight(v);
+              return `<span class="vote-chip">${esc(nameOf(v))}${w > 1 ? ` <b>×${w}</b>` : ''}</span>`;
+            }).join('')
+          : '<span class="vote-none">No votes</span>'}</div>
+      </div>`;
+    }).join('')}</div>`;
+  return card;
+}
 
 function viewVoting(main) {
   const ballots = S().currentBallots || [];
   const voters = present();
+  const t = S().voteTimer?.round === S().game.currentRound ? S().voteTimer : null;
+  const running = !!t?.endsAt;
+  const left = timerLeft();
 
-  const card = el('div', 'card accent');
-  card.innerHTML = `
-    <h2>Anonymous ballots</h2>
+  // --- clock ---------------------------------------------------------------
+  const clock = el('div', 'card accent');
+  clock.innerHTML = `
+    <h2>Discuss &amp; vote</h2>
     <p class="hint">${esc(PHASE_HINT.VOTING)}</p>
-    <div class="warnbox">Players vote from their own screen. Totals are public;
-      who voted for whom never is — not to you in a readable list, and not to them.</div>
-    <div class="action-grid" id="vGrid"></div>`;
+    <div class="timer${left === 0 ? ' done' : ''}" id="clock">${fmtClock(left)}</div>
+    <p class="faint" style="text-align:center;margin:-6px 0 0">${
+      running ? 'Running on every screen' : left === 0 ? "Time's up" : 'Paused'}</p>
+    <div class="btn-row" style="justify-content:center">
+      ${running
+        ? '<button class="btn" id="tPause">Pause</button>'
+        : `<button class="btn primary" id="tStart" ${left === 0 ? 'disabled' : ''}>${
+            t && left < voteSeconds() ? 'Resume' : 'Start'}</button>`}
+      <button class="btn" id="tAdd">+1 min</button>
+      <button class="btn ghost" id="tReset">Reset to ${fmtClock(voteSeconds())}</button>
+    </div>`;
+  main.appendChild(clock);
 
-  const haveBallots = new Set(ballots.map((b) => b.voterId));
-  main.appendChild(liveBanner(voters, haveBallots, 'ballot'));
+  clock.querySelector('#tAdd').onclick = async () => { await addVoteTime(60); render(); };
+  clock.querySelector('#tReset').onclick = async () => { await resetVoteTimer(); render(); };
+  const startBtn = clock.querySelector('#tStart');
+  if (startBtn) startBtn.onclick = async () => { await startVoteTimer(); render(); };
+  const pauseBtn = clock.querySelector('#tPause');
+  if (pauseBtn) pauseBtn.onclick = async () => { await pauseVoteTimer(); render(); };
+
+  if (running) {
+    let warned = left === 0;
+    clockHandle = setInterval(() => {
+      const c = document.getElementById('clock');
+      if (!c) { clearInterval(clockHandle); clockHandle = null; return; }
+      const l = timerLeft();
+      c.textContent = fmtClock(l);
+      c.classList.toggle('done', l === 0);
+      if (l === 0 && !warned) {
+        warned = true;
+        toast("Time's up. Players can no longer vote from their screens — tally when ready.");
+        render();
+      }
+    }, 500);
+  }
+
+  // --- who is still to vote, then the board -------------------------------
+  main.appendChild(liveBanner(voters, new Set(ballots.map((b) => b.voterId)), 'vote'));
+  main.appendChild(voteBoard(ballots, voters));
+
+  // --- admin entry / correction -------------------------------------------
+  const card = el('div', 'card private');
+  card.innerHTML = `
+    <h2>Enter or change a vote</h2>
+    <p class="hint">For anyone with a technical issue. ${live
+      ? 'Changes go straight to every screen. If the player votes again later, their new vote replaces yours.'
+      : 'Offline mode — every vote is entered here.'}</p>
+    <div class="action-grid" id="vGrid"></div>`;
   main.appendChild(card);
 
   const grid = card.querySelector('#vGrid');
   for (const v of voters) {
     const cur = ballots.find((b) => b.voterId === v.id);
     const extra = isStaged(v, E.ITEM.EXTRA_VOTE);
-    const dbl = S().currentMaster?.doubleVotePlayerId === v.id;
-    const weight = 1 + (extra ? 1 : 0) + (dbl ? 1 : 0);
+    const weight = ballotWeight(v.id);
     const row = el('div', 'action-row' + (cur ? ' submitted' : ''));
     row.innerHTML = `
       <div class="who">${esc(v.displayName)}<small>${weight > 1 ? `weight ${weight}` : 'weight 1'}</small></div>
-      ${targetSelect('t', cur?.targetId, { exclude: [], blank: '— abstain —' })}
+      ${targetSelect('t', cur?.targetId, { exclude: [], blank: '— no vote —' })}
       <span class="badge ${cur ? 'alive' : 'out'}">${sourceLabel(cur, 'Cast')}</span>`;
     row.querySelector('select').onchange = (e) => setBallot(v.id, e.target.value);
     grid.appendChild(row);
@@ -1399,7 +1490,7 @@ function viewVoting(main) {
     }
   }
 
-  // Vote manipulation
+  // --- vote manipulation (unchanged) --------------------------------------
   const mafiaWithVM = present().filter(
     (p) => p.role === E.ROLE.MAFIA && (ownsUsable(p, E.ITEM.VOTE_MANIPULATION) || isStaged(p, E.ITEM.VOTE_MANIPULATION)));
   if (mafiaWithVM.length) {
@@ -1407,7 +1498,7 @@ function viewVoting(main) {
     const mcard = el('div', 'card private');
     mcard.innerHTML = `
       <h2>Vote Manipulation</h2>
-      <p class="hint">One anonymous adjustment. The source is never shown in the totals.</p>
+      <p class="hint">One anonymous adjustment. Never shown on the board — only in the final count.</p>
       <label class="field"><span>Target</span>${targetSelect('t', vm?.targetId)}</label>
       <label class="field"><span>Adjustment</span>
         <select data-field="d">
@@ -1415,39 +1506,57 @@ function viewVoting(main) {
           <option value="-1"${vm?.delta === -1 ? ' selected' : ''}>&minus;1 vote</option>
         </select></label>`;
     main.appendChild(mcard);
-    const [t, d] = mcard.querySelectorAll('select');
+    const [t2, d] = mcard.querySelectorAll('select');
     const save = () => commitQuiet((st) => {
-      st.currentManipulation = t.value ? { targetId: t.value, delta: Number(d.value) } : null;
+      st.currentManipulation = t2.value ? { targetId: t2.value, delta: Number(d.value) } : null;
     });
-    t.onchange = save; d.onchange = save;
+    t2.onchange = save; d.onchange = save;
   }
 
+  // --- tally ---------------------------------------------------------------
   const go = el('div', 'card');
   go.innerHTML = `<div class="btn-row" style="margin:0">
     <button class="btn primary" id="tally">Tally the vote</button></div>
-    <p class="faint" style="margin-top:10px">${ballots.length} of ${voters.length} ballots entered.</p>`;
+    <p class="faint" style="margin-top:10px">${ballots.length} of ${voters.length} votes in.
+      Tallying ends the phase and applies hidden weights, immunity and manipulation.</p>`;
   main.appendChild(go);
 
   go.querySelector('#tally').onclick = async () => {
-    if (!ballots.length) return toast('No ballots entered.', true);
-
-    /* One last sync before the tally. A ballot that arrives between the last
-       poll and this click would otherwise be silently excluded from a count
-       that cannot be re-run. */
-    if (live) {
-      await pollNow({ silent: false });
-    }
+    /* One last sync before the tally. A vote cast between the last poll and
+       this click would otherwise be left out of a count that cannot re-run. */
+    if (live) await pollNow({ silent: false });
     const finalBallots = S().currentBallots || [];
+    if (!finalBallots.length) return toast('No votes in yet.', true);
     const missing = voters.length - finalBallots.length;
-    if (missing > 0 && !(await confirmAction(`Tally with ${missing} ballot(s) missing?`,
+    if (missing > 0 && !(await confirmAction(`Tally with ${missing} vote(s) missing?`,
       'Anyone who has not voted is counted as abstaining. You can rewind afterwards, but the result is recorded now.'))) return;
 
     const res = E.resolveVote(S(), finalBallots, S().currentMaster || {}, S().currentManipulation);
-    await commit((d) => { d.currentVoteResult = res; d.game.status = E.PHASE.RESULTS; });
+    await commit((d) => {
+      d.currentVoteResult = res;
+      d.game.status = E.PHASE.RESULTS;
+      if (d.voteTimer) d.voteTimer = { ...d.voteTimer, endsAt: null, remaining: 0 };
+    });
+    if (live) live.pushVoteTimer(S().game.currentRound, { endsAt: null, remaining: 0 });
   };
 }
 
+/*
+  Online, an admin vote is written to the ballots table like any other, so
+  the board on every screen shows it and the tally counts it. Offline it
+  lives in state only, exactly as before.
+*/
 async function setBallot(voterId, targetId) {
+  if (live) {
+    const r = await live.setBallot(S().game.currentRound, voterId, targetId || null);
+    if (!r.ok) {
+      render();
+      return toast(`Could not save that vote online (${r.reason}). Run voting.sql in Supabase.`, true);
+    }
+    await pollNow();
+    render();
+    return;
+  }
   await commit((d) => {
     const list = (d.currentBallots || []).filter((b) => b.voterId !== voterId);
     if (targetId) list.push({ voterId, targetId, source: SOURCE.ADMIN });
@@ -1488,6 +1597,8 @@ function viewResults(main) {
   }
   main.appendChild(card);
 
+  main.appendChild(voteBoard(S().currentBallots || [], present(),
+    { title: 'Final votes', final: true }));
   if (res.eliminated && byId(res.eliminated)?.lifeStatus === E.LIFE.ALIVE) {
     const apply = el('div', 'card accent');
     apply.innerHTML = `<h2>Apply the elimination</h2>
@@ -1561,6 +1672,7 @@ async function advancePhase() {
       d.currentVoteResult = null;
       d.currentRewardsPaid = false;
       d.pendingPublicEvent = null;
+      d.voteTimer = null;
       if (d.game.countdownEnabled && d.game.roundsRemaining != null) {
         d.game.roundsRemaining = Math.max(0, d.game.roundsRemaining - 1);
       }
@@ -1593,6 +1705,14 @@ async function advancePhase() {
   }
 
   await commit((d) => { d.game.status = E.nextPhase(d.game.status); });
+
+  /* Entering Discuss & vote starts the clock on every screen. Only the first
+     time this week - rewinding and coming back leaves it as it was. */
+  if (S().game.status === E.PHASE.VOTING &&
+      S().voteTimer?.round !== S().game.currentRound) {
+    await startVoteTimer(voteSeconds());
+    render();
+  }
 }
 
 async function closeSession() {
@@ -1619,6 +1739,7 @@ async function closeSession() {
     d.currentBallots = [];
     d.currentVoteResult = null;
     d.currentManipulation = null;
+    d.voteTimer = null;
     d.currentMaster = { immunePlayerId: null, doubleVotePlayerId: null };
   }, { eventType: 'SESSION_CLOSED', summary: `Week ${S().game.currentRound} closed` });
 
@@ -1732,7 +1853,7 @@ function openSettings() {
   const g = S().game;
   const numeric = ['spiritPointsAttendance',
     'spiritPointsMinigameWin', 'resurrectionCost', 'resurrectionDiscountedCost',
-    'maxActiveMafiaFromRecruit'];
+    'maxActiveMafiaFromRecruit', 'voteMinutes'];
 
   openModal(`
     <h2>Settings</h2>

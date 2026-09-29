@@ -1,4 +1,4 @@
-/* mafia v0.4 | live.js | 23 Sep 2026 */
+/* mafia v0.5 | live.js | 30 Sep 2026 */
 /*
   PLAYER SUBMISSIONS -> ADMIN CONSOLE.
 
@@ -116,7 +116,22 @@ export class Live {
     return { ok: true };
   }
 
-  /** Sheriff findings and anything else addressed to one person. */
+  /** Admin enters or clears one player's vote. null target = no vote. */
+  async setBallot(round, voterId, targetId) {
+    const q = targetId
+      ? this.sb.from('ballots').upsert(
+          { round, voter_id: voterId, target_id: targetId },
+          { onConflict: 'round,voter_id' })
+      : this.sb.from('ballots').delete().eq('round', round).eq('voter_id', voterId);
+    const { error } = await q;
+    if (error) {
+      this.lastError = error.message;
+      return { ok: false, reason: error.message };
+    }
+    return { ok: true };
+  }
+
+  /** Anything addressed to one person (none at present). */
   async pushPrivateEvents(round, events) {
     if (!events || !events.length) return { ok: true };
     const rows = events.map((e) => ({
@@ -126,6 +141,25 @@ export class Live {
       body: e.text
     }));
     const { error } = await this.sb.from('private_events').insert(rows);
+    if (error) {
+      this.lastError = error.message;
+      return { ok: false, reason: error.message };
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Shares the discuss & vote clock with every player screen.
+   * One row (id 1). endsAt set = running; endsAt null = paused/not started.
+   */
+  async pushVoteTimer(round, t) {
+    const { error } = await this.sb.from('vote_timer').upsert({
+      id: 1,
+      round,
+      ends_at: t.endsAt ?? null,
+      remaining_seconds: Math.max(0, Math.round(t.remaining ?? 0)),
+      updated_at: new Date().toISOString()
+    });
     if (error) {
       this.lastError = error.message;
       return { ok: false, reason: error.message };

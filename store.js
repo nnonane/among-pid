@@ -1,4 +1,4 @@
-/* mafia v0.2.5 | store.js | 30 Sep 2026 */
+/* mafia v0.2.6 | store.js | 30 Sep 2026 */
 /*
   ALL persistence lives here. No game rules. No DOM.
   This is the swappable adapter: replacing the LocalAdapter with a Supabase
@@ -81,6 +81,7 @@ export function blankState(name = 'Weekly Mafia') {
     currentBallots: [],
     currentMaster: { immunePlayerId: null, doubleVotePlayerId: null },
     currentManipulation: null,
+    voteTimer: null,          // { round, endsAt, remaining } - discuss & vote clock
     pendingPublicEvent: null,
     privateEvents: [],
     audit: []
@@ -205,6 +206,8 @@ export function migrate(state) {
   }
   state.game = { ...base.game, ...state.game, id: state.game?.id ?? base.game.id };
   state.game.settings = { ...DEFAULT_SETTINGS, ...(state.game.settings || {}) };
+  // Discussion was merged into Voting. A save paused in it resumes there.
+  if (state.game.status === 'DISCUSSION') state.game.status = PHASE.VOTING;
   // Repair audit entries written by a build that stored live references.
   // Any surviving cycle here would break the next save and export.
   state.audit = (state.audit || []).map((entry) => {

@@ -1,9 +1,13 @@
 <!DOCTYPE html>
-<!-- mafia v0.7 | player.html | 30 Sep 2026 -->
+<!-- mafia v0.8 | player.html | 30 Sep 2026 -->
 <!--
   v0.7: Doctor and Sheriff retired. Only the Mafia have a night action;
   everyone else is a Civilian. A seat still marked Doctor or Sheriff in the
   database is shown and treated as Civilian.
+  v0.8: Discussion and Voting are one "Discuss & vote" phase. A shared clock
+  counts down on every screen, and an Among Us style board shows who voted
+  for whom. Tap a name, confirm, change your mind until time runs out.
+  Refreshes every 2.5 seconds while voting (6 seconds otherwise).
 -->
 <!--
   THE PLAYER SCREEN.
@@ -109,6 +113,32 @@
 
   /* v0.6: phase-first player experience */
   .wrap{max-width:540px}#phaseCard{margin-bottom:14px}#phaseCard .card{position:relative;overflow:hidden;padding:30px 28px;min-height:210px;border:1px solid #35517c;border-left:5px solid var(--phase-accent,#e1b642);background:linear-gradient(145deg,#223354,#172540);box-shadow:0 18px 44px rgba(0,0,0,.32)}#phaseCard .card:after{content:"";position:absolute;width:220px;height:220px;right:-110px;top:-130px;border-radius:50%;background:var(--phase-glow,rgba(225,182,66,.13));pointer-events:none}#phaseCard h3{font-size:29px;line-height:1.16;letter-spacing:-.025em;margin:0 0 11px;max-width:430px}#phaseCard h3:before{content:var(--phase-label,"CURRENT STAGE");display:block;color:var(--phase-accent,#e1b642);font-size:11px;line-height:1;letter-spacing:.16em;text-transform:uppercase;margin-bottom:15px}#phaseCard p.hint{font-size:15px;line-height:1.55;max-width:440px;margin-bottom:20px}#phaseCard label{color:#b5c3dc;font-weight:650}#phaseCard select{min-height:52px;font-size:16px;margin-bottom:14px;background:#0b1527}#phaseCard button:not(.small){min-height:52px;font-size:16px}#phaseCard .ok,#phaseCard .note,#phaseCard .err{font-size:15px;padding:15px 16px}#phaseCard.phase-hidden{--phase-accent:#b094ef;--phase-glow:rgba(176,148,239,.18);--phase-label:"ACTION REQUIRED"}#phaseCard.phase-minigame{--phase-accent:#53c9b1;--phase-glow:rgba(83,201,177,.17)}#phaseCard.phase-rewards{--phase-accent:#e1b642;--phase-glow:rgba(225,182,66,.18)}#phaseCard.phase-voting{--phase-accent:#f0c454;--phase-glow:rgba(240,196,84,.2);--phase-label:"ACTION REQUIRED"}#phaseCard.phase-results,#phaseCard.phase-finished{--phase-accent:#e36561;--phase-glow:rgba(227,101,97,.18);--phase-label:"WEEK RESULT"}#phaseCard.phase-discussion{--phase-accent:#6fa8ff;--phase-glow:rgba(111,168,255,.18)}.phase-progress{display:flex;gap:7px;padding:2px 2px 18px;overflow-x:auto;scrollbar-width:none}.phase-progress::-webkit-scrollbar{display:none}.phase-progress .step{flex:1 0 36px;min-width:36px}.phase-progress .bar{display:block;height:4px;border-radius:999px;background:#263654;margin-bottom:6px}.phase-progress .txt{display:block;color:#627697;font-size:9px;text-align:center;white-space:nowrap}.phase-progress .done .bar{background:#53c9b1}.phase-progress .active .bar{background:#e1b642;box-shadow:0 0 0 3px rgba(225,182,66,.12)}.phase-progress .active .txt{color:#dce5f5;font-weight:700}.role-summary{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 22px;background:linear-gradient(145deg,#182640,#131f36)}.role-summary .role{font-size:22px;margin-top:4px}.role-summary .stats{margin:0;padding:0 0 0 20px;border:0;border-left:1px solid #2b4166;gap:22px;flex:0 0 auto}.role-summary .stat .v{font-size:20px}.role-summary .stat .k{font-size:9.5px}#alertCard .card.alert{padding:24px;border:1px solid #87393d;border-left:5px solid #e36561;box-shadow:0 15px 34px rgba(100,20,24,.25)}#alertCard .big{font-size:29px}#inboxCard .card{border-left:5px solid #a28bdd}#inboxCard h2{font-size:12px;color:#b9a8e8}#inboxCard .item .t{font-size:16px;line-height:1.4}.note{font-size:16px!important;padding:17px!important;border-left-width:5px!important}@media(max-width:520px){#phaseCard .card{min-height:195px;padding:25px 22px}#phaseCard h3{font-size:26px}.role-summary{align-items:flex-start}.role-summary .stats{gap:15px;padding-left:15px}.phase-progress .txt{display:none}.phase-progress{padding-bottom:14px}}
+  /* v0.8: discuss & vote board */
+  .vtop{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+  .vclock{font-size:34px;font-weight:800;font-variant-numeric:tabular-nums;color:#f0c454;line-height:1;padding:6px 12px;border-radius:10px;background:#0b1527;border:1px solid #35517c;white-space:nowrap}
+  .vclock.done{color:#ff8a86;border-color:#87393d}
+  .vclock.paused{color:#93a5c4}
+  .vboard{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:4px 0 16px}
+  .vtile{background:#0f1a2f;border:1px solid #27395c;border-radius:10px;padding:10px 11px;min-height:70px;text-align:left;transition:border-color .15s,background .15s,transform .1s}
+  .vtile.tap{cursor:pointer}
+  .vtile.tap:active{transform:scale(.97)}
+  .vtile.hot{border-color:#5d4c22}
+  .vtile.lead{border-color:#e1b642;background:#1f2233}
+  .vtile.mine{border-color:#3fbf6f;background:#12301f}
+  .vtile.sel{border-color:#6fa8ff;box-shadow:0 0 0 3px rgba(111,168,255,.25)}
+  .vtile.off{opacity:.55}
+  .vhead{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+  .vn{flex:1;font-weight:650;font-size:14.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .vn em{font-style:normal;color:#64789c;font-weight:400;font-size:12px}
+  .vc{font-weight:800;font-size:18px;color:#e1b642}
+  .vtick{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:#9ce6b8;border:1px solid #2d5f41;background:#12301f;border-radius:999px;padding:1px 6px}
+  .vchips{display:flex;flex-wrap:wrap;gap:4px}
+  .vchip{font-size:11px;padding:1px 7px;border-radius:999px;background:#1d2c4c;border:1px solid #27395c;color:#b5c3dc;animation:vpop .25s ease-out}
+  .vchip.me{background:#12301f;border-color:#2d5f41;color:#9ce6b8}
+  .vnone{font-size:11.5px;color:#4d5f7e;font-style:italic}
+  @keyframes vpop{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion:reduce){.vchip{animation:none}}
+  @media(max-width:380px){.vboard{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -204,16 +234,15 @@ const RETIRED = ['DOCTOR', 'SHERIFF'];
 const retire = (row) => (row && RETIRED.includes(row.role))
   ? { ...row, role: 'CIVILIAN', alignment: 'GOOD' } : row;
 
-const PHASE_ORDER=['ATTENDANCE','HIDDEN_ACTIONS','MINIGAME','REWARDS','RESOLUTION','MASTER','DISCUSSION','VOTING','RESULTS'];
-const PHASE_SHORT={ATTENDANCE:'Start',HIDDEN_ACTIONS:'Actions',MINIGAME:'Game',REWARDS:'Rewards',RESOLUTION:'Result',MASTER:'Master',DISCUSSION:'Talk',VOTING:'Vote',RESULTS:'End'};
-const PHASE_STYLE={HIDDEN_ACTIONS:'hidden',MINIGAME:'minigame',REWARDS:'rewards',RESOLUTION:'results',MASTER:'hidden',DISCUSSION:'discussion',VOTING:'voting',RESULTS:'results',FINISHED:'finished',CLOSED:'closed',ATTENDANCE:'discussion'};
+const PHASE_ORDER=['ATTENDANCE','HIDDEN_ACTIONS','MINIGAME','REWARDS','RESOLUTION','MASTER','VOTING','RESULTS'];
+const PHASE_SHORT={ATTENDANCE:'Start',HIDDEN_ACTIONS:'Actions',MINIGAME:'Game',REWARDS:'Rewards',RESOLUTION:'Result',MASTER:'Master',VOTING:'Vote',RESULTS:'End'};
+const PHASE_STYLE={HIDDEN_ACTIONS:'hidden',MINIGAME:'minigame',REWARDS:'rewards',RESOLUTION:'results',MASTER:'hidden',VOTING:'voting',RESULTS:'results',FINISHED:'finished',CLOSED:'closed',ATTENDANCE:'discussion'};
 const IDLE = {
   CLOSED:      ['Nothing is running', 'The session is closed. Your role, tokens and items are all safe until Hunter opens the next week.'],
   ATTENDANCE:  ['Session starting', 'Hunter is marking who is here. Hold tight.'],
   MINIGAME:    ['Minigame', 'Play the game. Winners take a Reward Token.'],
   RESOLUTION:  ['Resolving', 'The night is being resolved. Watch the call.'],
   MASTER:      ['Master intervention', 'Nothing for you to do right now.'],
-  DISCUSSION:  ['Discussion', 'Accuse, defend, bluff. The vote is next.'],
   RESULTS:     ['Results', 'The vote is in.'],
   FINISHED:    ['Game over', 'That is the end of this game.']
 };
@@ -225,6 +254,9 @@ let phase = null;
 let roster = [];
 let myAction = null;
 let myBallot = null;
+let ballots = [];           // every ballot this week - the vote board is public
+let voteTimer = null;       // shared clock row from vote_timer
+let selected = null;        // tile tapped but not yet confirmed
 let myPurchases = [];
 let mafiaPeers = null;      // null = not loaded, [] = genuinely none
 let mafiaError = null;
@@ -281,7 +313,16 @@ async function load() {
   $('outWrap').classList.remove('hide');
 
   await refresh();
-  if (!timer) timer = setInterval(refresh, 6000);
+  schedule();
+}
+
+/* Refresh loop. Faster while voting so the board feels live. */
+function schedule() {
+  clearTimeout(timer);
+  timer = setTimeout(async () => {
+    try { await refresh(); } catch (err) { console.error('[player] refresh failed', err); }
+    schedule();
+  }, phase?.phase === 'VOTING' ? 2500 : 6000);
 }
 
 /*
@@ -315,18 +356,23 @@ async function refresh() {
     alertHtml = '';
   }
   lastRound = r;
-  const [aRes, bRes, pRes, iRes] = await Promise.all([
+  const [aRes, bRes, pRes, iRes, tRes] = await Promise.all([
     sb.from('actions').select('*').eq('round', r),
-    sb.from('ballots').select('*').eq('round', r),
+    sb.from('ballots').select('round, voter_id, target_id').eq('round', r),
     sb.from('purchases').select('*').eq('round', r).order('created_at'),
     sb.from('private_events').select('round, type, body, created_at')
-      .order('created_at', { ascending: false }).limit(20)
+      .order('created_at', { ascending: false }).limit(20),
+    sb.from('vote_timer').select('*').limit(1)
   ]);
 
   /* Filtered here as well as in the database. If a policy is ever wrong
      again, this turns a leak into a bug. */
   myAction    = (aRes.data ?? []).find((x) => x.actor_id === me.id) ?? null;
-  myBallot    = (bRes.data ?? []).find((x) => x.voter_id === me.id) ?? null;
+  /* Ballots are public by design now. A failed read keeps the last board
+     rather than blanking it. */
+  if (!bRes.error) ballots = bRes.data ?? [];
+  myBallot    = ballots.find((x) => x.voter_id === me.id) ?? null;
+  voteTimer   = tRes.error ? null : ((tRes.data && tRes.data[0]) ?? null);
   myPurchases = (pRes.data ?? []).filter((x) => x.player_id === me.id);
   inbox       = iRes.data ?? [];
 
@@ -429,14 +475,7 @@ function paintPhase() {
   if (p === 'REWARDS')        return paintShop(host);
   if (p === 'VOTING')         return paintVote(host);
 
-  if (p === 'RESULTS') {
-    const who = phase.eliminated_id ? nameOf(phase.eliminated_id) : null;
-    return void (host.innerHTML = card('quiet', `
-      <h3>Results</h3>
-      <p class="hint">${who
-        ? esc(who) + ' was voted out.'
-        : 'The vote produced no elimination.'}</p>`));
-  }
+  if (p === 'RESULTS')        return paintVote(host, true);
 
   const [title, text] = IDLE[p] ?? ['Standing by', 'Nothing to submit right now.'];
   host.innerHTML = card('quiet',
@@ -564,37 +603,104 @@ async function requestPurchase(rewardType) {
 }
 
 /* ------------------------------------------------------------- vote --- */
+/*
+  Discuss & vote. Everyone sees the same board: a tile per living player,
+  with the names of whoever is voting for them. Tap a tile, confirm, change
+  your mind as often as you like until the clock runs out. Items and the
+  Master can still shift the final count, which is why the result can
+  differ from a straight count of the names.
+*/
 
-function paintVote(host) {
-  if (!alive()) {
-    return void (host.innerHTML = card('quiet',
-      `<h3>The vote</h3>
-       <p class="hint">Spirits and Dormant players do not vote.</p>`));
-  }
+const fmtClock = (sec) =>
+  `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
 
+/** Seconds left on the shared clock, or null if there is no clock this week. */
+function voteLeft() {
+  const t = voteTimer;
+  if (!t || t.round !== round()) return null;
+  if (t.ends_at) return Math.max(0, Math.ceil((Date.parse(t.ends_at) - Date.now()) / 1000));
+  return Math.max(0, t.remaining_seconds ?? 0);
+}
+const clockRunning = () => !!(voteTimer && voteTimer.round === round() && voteTimer.ends_at);
+
+function paintVote(host, final = false) {
   const pool = roster.filter((r) => r.life_status === 'ALIVE');
-  const done = !!myBallot;
+  const left = voteLeft();
+  const timeUp = left === 0;
+  const canVote = !final && alive() && !timeUp;
 
+  const byTarget = {};
+  for (const b of ballots) (byTarget[b.target_id] ||= []).push(b.voter_id);
+  const voted = new Set(ballots.map((b) => b.voter_id));
+  const top = Math.max(0, ...Object.values(byTarget).map((v) => v.length));
+  const mine = myBallot?.target_id ?? null;
+  if (selected && (!canVote || !pool.some((p) => p.id === selected))) selected = null;
+
+  const who = final && phase.eliminated_id ? nameOf(phase.eliminated_id) : null;
+  const hint = final
+    ? (who ? `<strong>${esc(who)}</strong> was voted out.` : 'The vote produced no elimination.')
+      + ' Items and the Master can change the final count, so it may not match the names below.'
+    : !alive() ? 'You are out, so you can watch but not vote.'
+    : timeUp ? "Time's up. Hunter is counting the votes."
+    : 'Tap a name, then confirm. Everyone can see who you pick. Change it as often as you like until time runs out.';
+
+  const clockCls = timeUp ? ' done' : clockRunning() ? '' : ' paused';
+  const clock = !final && left !== null
+    ? `<div class="vclock${clockCls}" id="vClock">${fmtClock(left)}</div>` : '';
+
+  const tiles = pool.map((p) => {
+    const vs = byTarget[p.id] || [];
+    const cls = ['vtile',
+      vs.length ? 'hot' : '',
+      vs.length && vs.length === top ? 'lead' : '',
+      p.id === mine ? 'mine' : '',
+      p.id === selected ? 'sel' : '',
+      canVote ? 'tap' : 'off'].filter(Boolean).join(' ');
+    return `<div class="${cls}" data-t="${esc(p.id)}" ${canVote ? 'role="button" tabindex="0"' : ''}>
+      <div class="vhead">
+        <span class="vn">${esc(p.display_name)}${p.id === me.id ? ' <em>(you)</em>' : ''}</span>
+        ${voted.has(p.id) ? '<span class="vtick">Voted</span>' : ''}
+        <span class="vc">${vs.length || ''}</span>
+      </div>
+      <div class="vchips">${vs.length
+        ? vs.map((v) => `<span class="vchip${v === me.id ? ' me' : ''}">${esc(v === me.id ? 'You' : nameOf(v))}</span>`).join('')
+        : '<span class="vnone">No votes</span>'}</div>
+    </div>`;
+  }).join('');
+
+  const pick = selected && selected !== mine;
   host.innerHTML = card('act', `
-    <h3>Who do you vote for?</h3>
-    <p class="hint">Completely anonymous. Nobody &mdash; not even the other players &mdash;
-      can see who you picked. Only the totals are read out.</p>
-    ${done ? `<div class="ok">Ballot cast for
-      <strong>${esc(nameOf(myBallot.target_id))}</strong>.
-      You can change it until voting closes.</div>` : ''}
-    <label>Your vote</label>
-    <select id="vT">${optionList(pool, myBallot?.target_id)}</select>
-    <button id="vGo">${done ? 'Change my vote' : 'Cast my vote'}</button>
+    <div class="vtop">
+      <h3>${final ? 'Final votes' : 'Discuss &amp; vote'}</h3>
+      ${clock}
+    </div>
+    <p class="hint">${hint}</p>
+    ${!final && left !== null && !clockRunning() && !timeUp ? '<div class="note">The clock is paused.</div>' : ''}
+    <div class="vboard">${tiles}</div>
+    ${canVote ? `<button id="vGo" ${pick ? '' : 'disabled'}>${
+        pick ? `Vote for ${esc(nameOf(selected))}`
+        : mine ? `You voted for ${esc(nameOf(mine))}`
+        : 'Tap a name to vote'}</button>` : ''}
+    <p class="hint" style="margin:12px 0 0">${voted.size} of ${pool.length} have voted.</p>
     <div id="vMsg"></div>`);
 
-  $('vGo').onclick = castVote;
+  if (!canVote) return;
+  host.querySelectorAll('.vtile[data-t]').forEach((tile) => {
+    const choose = () => { selected = tile.dataset.t; paintPhase(); };
+    tile.onclick = choose;
+    tile.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(); } };
+  });
+  const go = $('vGo');
+  if (go) go.onclick = castVote;
 }
 
 async function castVote() {
-  const target = $('vT').value;
-  if (!target) return say('vMsg', 'Pick someone first.', true);
+  const target = selected;
+  if (!target) return say('vMsg', 'Tap someone first.', true);
+  if (voteLeft() === 0) return say('vMsg', "Time's up — votes are closed.", true);
 
   busy = true;
+  $('vGo').disabled = true;
   const { error } = await sb.from('ballots').upsert({
     round: round(),
     voter_id: me.id,
@@ -602,10 +708,23 @@ async function castVote() {
   }, { onConflict: 'round,voter_id' });
   busy = false;
 
-  if (error) return say('vMsg', explain(error.message), true);
+  if (error) { paintPhase(); return say('vMsg', explain(error.message), true); }
+  selected = null;
+  await refresh();
   say('vMsg', 'Vote recorded.', false);
-  refresh();
 }
+
+/* The clock ticks locally every half second; the board refreshes on the
+   2.5 second loop. When time runs out the board locks straight away. */
+let lastLeft = null;
+setInterval(() => {
+  if (!phase || phase.phase !== 'VOTING') { lastLeft = null; return; }
+  const left = voteLeft();
+  const c = $('vClock');
+  if (c && left !== null) c.textContent = fmtClock(left);
+  if (lastLeft !== null && lastLeft > 0 && left === 0) { selected = null; paintPhase(); }
+  lastLeft = left;
+}, 500);
 
 /* ------------------------------------------------------ side panels --- */
 
@@ -708,7 +827,7 @@ $('go').onclick = async () => {
 $('pw').onkeydown = (e) => { if (e.key === 'Enter') $('go').click(); };
 
 $('out').onclick = async () => {
-  clearInterval(timer);
+  clearTimeout(timer);
   await sb.auth.signOut();
   location.reload();
 };

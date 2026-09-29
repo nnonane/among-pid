@@ -1,8 +1,11 @@
-/* mafia v0.2 | engine.js | 30 Sep 2026 */
+/* mafia v0.3 | engine.js | 30 Sep 2026 */
 /*
   v0.2: Doctor and Sheriff retired. Every non-Mafia player is a Civilian.
   The only night action is the Mafia kill; Temporary Immunity is the only
   thing that can block it. Everything else is unchanged.
+  v0.3: Discussion and Voting are one phase. Ballots are public - every
+  player can see who voted for whom - while hidden weights (Extra Vote,
+  Master double vote, Vote Manipulation) still only show in the final count.
 */
 /*
   PURE GAME RULES. No DOM. No storage. No side effects.
@@ -40,8 +43,7 @@ export const PHASE = {
   REWARDS: 'REWARDS',
   RESOLUTION: 'RESOLUTION',
   MASTER: 'MASTER',
-  DISCUSSION: 'DISCUSSION',
-  VOTING: 'VOTING',
+  VOTING: 'VOTING',       // discussion and voting together, on one timer
   RESULTS: 'RESULTS',
   FINISHED: 'FINISHED'
 };
@@ -54,7 +56,6 @@ export const PHASE_ORDER = [
   PHASE.REWARDS,
   PHASE.RESOLUTION,
   PHASE.MASTER,
-  PHASE.DISCUSSION,
   PHASE.VOTING,
   PHASE.RESULTS
 ];
@@ -92,7 +93,8 @@ export const DEFAULT_SETTINGS = {
   resurrectionDiscountedCost: 2,
   maxActiveMafiaFromRecruit: 3,
   tempImmunityCoversVote: true,
-  masterEnabled: true
+  masterEnabled: true,
+  voteMinutes: 5                       // discussion & vote timer
 };
 
 // ---------------------------------------------------------------------------
@@ -574,7 +576,10 @@ export function visibleStateFor(state, viewer) {
       };
     }),
     currentActions: undefined,
-    currentBallots: undefined,
+    // Ballots are public: who voted for whom. Weights are not.
+    currentBallots: (state.currentBallots || []).map((b) => ({
+      voterId: b.voterId, targetId: b.targetId
+    })),
     audit: undefined,
     storeVisible: closed ? [] : STORE[viewer.role] || []
   };

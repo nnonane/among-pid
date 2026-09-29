@@ -1,4 +1,4 @@
-/* mafia v0.3 | content.js | 30 Sep 2026 */
+/* mafia v0.4 | content.js | 30 Sep 2026 */
 /*
   YOUR FILE. Edit freely — nothing here affects game logic.
   Minigames, labels and display text only.
@@ -88,8 +88,7 @@ export const PHASE_LABEL = {
   REWARDS: 'Tokens & purchases',
   RESOLUTION: 'Resolution',
   MASTER: 'Master',
-  DISCUSSION: 'Discussion',
-  VOTING: 'Voting',
+  VOTING: 'Discuss & vote',
   RESULTS: 'Results',
   FINISHED: 'Game over'
 };
@@ -102,8 +101,7 @@ export const PHASE_HINT = {
   REWARDS: 'Award tokens to winners, then handle any private purchases.',
   RESOLUTION: 'Preview the outcome, then publish. This is when the death is announced.',
   MASTER: 'The Master privately grants one vote immunity and one double vote for this round only.',
-  DISCUSSION: 'Players accuse and defend. Nothing to enter here.',
-  VOTING: 'Collect anonymous ballots and enter them. Do not read them aloud.',
+  VOTING: 'One timer. Everyone discusses and votes whenever they are ready. Every screen shows who voted for whom. Change or enter votes below for anyone having trouble.',
   RESULTS: 'Reveal the outcome, then close the session.',
   FINISHED: 'The game has ended.'
 };
@@ -137,5 +135,6 @@ export const SETTING_LABEL = {
   resurrectionDiscountedCost: 'Discounted resurrection cost',
   maxActiveMafiaFromRecruit: 'Maximum active Mafia',
   tempImmunityCoversVote: 'Immunity also blocks the vote',
-  masterEnabled: 'Master role in play'
+  masterEnabled: 'Master role in play',
+  voteMinutes: 'Discuss & vote timer (minutes)'
 };

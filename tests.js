@@ -1,4 +1,4 @@
-/* mafia v0.2 | tests.js | 30 Sep 2026 */
+/* mafia v0.3 | tests.js | 30 Sep 2026 */
 /* Disposable test harness. Runs in Node or in the browser via tests.html. */
 
 import * as E from './engine.js';
@@ -471,14 +471,18 @@ test('phases advance in the documented order', () => {
   eq(E.nextPhase(E.PHASE.MINIGAME), E.PHASE.REWARDS);
   eq(E.nextPhase(E.PHASE.REWARDS), E.PHASE.RESOLUTION);
   eq(E.nextPhase(E.PHASE.RESOLUTION), E.PHASE.MASTER);
-  eq(E.nextPhase(E.PHASE.MASTER), E.PHASE.DISCUSSION);
-  eq(E.nextPhase(E.PHASE.DISCUSSION), E.PHASE.VOTING);
+  eq(E.nextPhase(E.PHASE.MASTER), E.PHASE.VOTING, 'discussion and voting are one phase');
   eq(E.nextPhase(E.PHASE.VOTING), E.PHASE.RESULTS);
 });
 
 test('RESULTS loops back to CLOSED', () => eq(E.nextPhase(E.PHASE.RESULTS), E.PHASE.CLOSED));
 test('FINISHED is terminal', () => eq(E.nextPhase(E.PHASE.FINISHED), E.PHASE.FINISHED));
-test('rewind works', () => eq(E.previousPhase(E.PHASE.VOTING), E.PHASE.DISCUSSION));
+test('rewind works', () => eq(E.previousPhase(E.PHASE.VOTING), E.PHASE.MASTER));
+test('there is no separate Discussion phase', () => {
+  assert(!('DISCUSSION' in E.PHASE), 'DISCUSSION constant removed');
+  assert(!E.PHASE_ORDER.includes('DISCUSSION'), 'not in the phase order');
+});
+test('vote timer defaults to 5 minutes', () => eq(E.DEFAULT_SETTINGS.voteMinutes, 5));
 
 // ===========================================================================
 suite('Information visibility');
@@ -499,14 +503,32 @@ test('Mafia see each other but no one else', () => {
   eq(view.players.find(p => p.id === 'c4').role, null);
 });
 
-test('player views expose no actions, ballots or audit', () => {
+test('player views expose no actions or audit', () => {
   const s = makeState(baseCast);
   s.currentActions = [{ actorId: 'm1', type: E.ACTION.MAFIA_KILL_VOTE, targetId: 'c1' }];
-  s.currentBallots = [{ voterId: 'c1', targetId: 'm1' }];
   const view = E.visibleStateFor(s, s.players.find(p => p.id === 'c2'));
   eq(view.currentActions, undefined);
-  eq(view.currentBallots, undefined);
   eq(view.audit, undefined);
+});
+
+test('ballots are public: every player sees who voted for whom', () => {
+  const s = makeState(baseCast);
+  s.currentBallots = [{ voterId: 'c1', targetId: 'm1', source: 'ADMIN' }];
+  const view = E.visibleStateFor(s, s.players.find(p => p.id === 'c2'));
+  eq(view.currentBallots.length, 1);
+  eq(view.currentBallots[0].voterId, 'c1');
+  eq(view.currentBallots[0].targetId, 'm1');
+  eq(view.currentBallots[0].source, undefined, 'nothing beyond voter and target leaks');
+});
+
+test('public ballots do not reveal hidden weights', () => {
+  const cast = baseCast.map(p => p.id === 'c1'
+    ? { ...p, inventory: [staged(E.ITEM.EXTRA_VOTE, 1)] } : p);
+  const s = makeState(cast);
+  s.currentBallots = [{ voterId: 'c1', targetId: 'm1' }];
+  const view = E.visibleStateFor(s, s.players.find(p => p.id === 'c2'));
+  eq(JSON.stringify(view.currentBallots), '[{"voterId":"c1","targetId":"m1"}]');
+  eq(view.players.find(p => p.id === 'c1').inventory, null, 'Extra Vote stays private');
 });
 
 test('balances of other players are hidden', () => {
@@ -601,6 +623,16 @@ test('old saves: Doctor and Sheriff become Civilian, nothing else changes', asyn
   eq(s.players.find(p => p.id === 'sh').spiritPoints, 1, 'points kept');
   eq(s.players.find(p => p.id === 'm1').role, E.ROLE.MAFIA, 'Mafia untouched');
   eq(s.currentActions.length, 1, 'retired action dropped, Mafia vote kept');
+});
+
+test('a save paused in the old Discussion phase resumes in Discuss & vote', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.init();
+  const old = makeState(baseCast, { status: 'DISCUSSION', currentRound: 3 });
+  await store.importJson(JSON.stringify(old));
+  eq(store.get().game.status, E.PHASE.VOTING);
+  eq(store.get().game.currentRound, 3);
+  eq(store.get().game.settings.voteMinutes, 5, 'timer setting backfilled');
 });
 
 test('a corrupt import is rejected', async () => {
