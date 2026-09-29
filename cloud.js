@@ -1,4 +1,4 @@
-/* mafia v0.3.2 | cloud.js | 29 Sep 2026 */
+/* mafia v0.3.3 | cloud.js | 29 Sep 2026 */
 /*
   ONLINE STORAGE + ADMIN LOGIN + PLAYER LOGIN LINKS.
 
@@ -207,12 +207,8 @@ export class SupabaseAdapter {
 
   /**
    * Wipes every player submission (actions, ballots, purchases, private
-   * results) so a new game cannot read last game's week 1 as its own, and a
-   * Sheriff does not see old findings in their inbox.
-   *
-   * Uses the reset_game() SQL function if installed. If it is not, falls back
-   * to clear_round() for each week played plus a direct private_events
-   * delete, and reports anything that still failed.
+   * results) so a new game cannot read last game's week 1 as its own.
+   * Uses reset_game() if installed, otherwise falls back per round.
    */
   async resetSubmissions(lastRound = 0) {
     const { error } = await this.sb.rpc('reset_game');
@@ -228,7 +224,7 @@ export class SupabaseAdapter {
     return {
       ok: false,
       reason: `reset_game() is not installed (${error.message}) and the fallback ` +
-              `also failed (${problems[0]}). Run reset_game.sql in Supabase.`
+              `also failed (${problems[0]}). Run fix_logins.sql in Supabase.`
     };
   }
 
@@ -462,7 +458,12 @@ async function openLinksPanel(sb) {
       They claim their own seat when they first sign in.</p>
     <div id="lMsg"></div>
     <div id="lBody"><p class="empty">Loading…</p></div>
-    <div class="btn-row"><button class="btn ghost" id="lClose">Close</button></div>`,
+    <div class="btn-row">
+      <button class="btn primary" id="lLink">Link now</button>
+      <button class="btn ghost" id="lClose">Close</button>
+    </div>
+    <p class="faint">Link now matches every email above to its Supabase account
+      straight away - no need to wait for the player to sign in.</p>`,
   (root) => {
     root.querySelector('#lClose').onclick = () => root.closest('.modal-backdrop').remove();
   });
@@ -475,6 +476,34 @@ async function openLinksPanel(sb) {
 
   const say = (html, bad) => {
     msg.innerHTML = `<div class="${bad ? 'warnbox' : 'okbox'}">${html}</div>`;
+  };
+  /*
+    Linking used to happen ONLY when a player signed in on player.html, and
+    any failure there was silently ignored. After a reset or a re-created
+    seat that left players stuck on "Waiting" with no explanation. This
+    links every seat now, from the admin side, and reports each one.
+  */
+  host.querySelector('#lLink').onclick = async (e) => {
+    e.target.disabled = true;
+    const { data: rows, error: linkErr } = await sb.rpc('link_all_seats');
+    e.target.disabled = false;
+    if (linkErr) {
+      return say(`Could not link: ${esc(linkErr.message)}<br>If it says the function
+        does not exist, run <code>fix_logins.sql</code> in Supabase.`, true);
+    }
+    const list = Array.isArray(rows) ? rows : [];
+    const bad = list.filter((r) => r.out_status !== 'LINKED');
+    host.closest('.modal-backdrop').remove();
+    await openLinksPanel(sb);
+    const again = document.querySelector('.modal-backdrop:last-of-type #lMsg');
+    if (!again) return;
+    again.innerHTML = bad.length
+      ? `<div class="warnbox">${bad.map((r) => `<strong>${esc(r.out_name)}</strong>: ${
+          r.out_status === 'NO_ACCOUNT'
+            ? `no Supabase account uses <code>${esc(r.out_email)}</code>. Check the spelling, or create it under Authentication → Users.`
+            : r.out_status === 'NO_EMAIL' ? 'no email typed in yet.'
+            : esc(r.out_status)}`).join('<br>')}</div>`
+      : `<div class="okbox">All ${list.length} player(s) linked.</div>`;
   };
 
   const { data, error } = await sb

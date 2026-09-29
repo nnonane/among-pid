@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- mafia v0.6.1 | player.html | 29 Sep 2026 -->
+<!-- mafia v0.6.2 | player.html | 29 Sep 2026 -->
 <!--
   THE PLAYER SCREEN.
 
@@ -260,7 +260,12 @@ async function load() {
   const { data: { user } } = await sb.auth.getUser();
   if (!user) return;
 
-  await sb.rpc('claim_my_seat');
+  /* This error used to be ignored, so a failed claim looked exactly like
+     "nobody has set up your email". It is now shown. */
+  const { error: claimErr } = await sb.rpc('claim_my_seat');
+  if (claimErr) {
+    return fail('Could not link your login to a seat: ' + claimErr.message + '. Tell Hunter.');
+  }
 
   const { data: rows, error } = await sb
     .from('players')

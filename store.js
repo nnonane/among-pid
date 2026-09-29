@@ -299,18 +299,9 @@ export class Store {
 
   /**
    * Starts a fresh game WITHOUT throwing the roster away.
-   *
-   * reset() empties the player list, but online the player ROWS stay in the
-   * database (saves never delete). That is what caused the restart bug: the
-   * console showed an empty roster, re-typing a name made a brand-new row
-   * with a new id and no login, and the old rows came back on refresh still
-   * holding last game's roles and Spirit status.
-   *
-   * This keeps every player's id, so their database row and login link are
-   * reused, and wipes only the game data on them. Settings are carried over.
-   *
-   * @param players  optional fresh roster (e.g. re-read from the database);
-   *                 defaults to the roster currently held.
+   * Keeps every player's id, so their database row and login link are
+   * reused, and wipes only the game data on them. Settings carry over.
+   * @param players  optional fresh roster (e.g. re-read from the database)
    */
   async newGame(players = null) {
     const prev = this.state;
