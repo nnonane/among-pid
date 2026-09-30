@@ -1,4 +1,4 @@
-/* mafia v0.4 | content.js | 30 Sep 2026 */
+/* mafia v1.0 | content.js | 30 Sep 2026 */
 /*
   YOUR FILE. Edit freely — nothing here affects game logic.
   Minigames, labels and display text only.
@@ -98,9 +98,9 @@ export const PHASE_HINT = {
   ATTENDANCE: 'Mark who is here. Absent players go Dormant and cannot act, vote or be targeted.',
   HIDDEN_ACTIONS: 'Collect the Mafia kill votes privately, then enter them here.',
   MINIGAME: 'Play the minigame. The killed player does not know yet, so they still take part.',
-  REWARDS: 'Award tokens to winners, then handle any private purchases.',
+  REWARDS: 'Master token awards are already available. Award minigame tokens, then handle private purchases.',
   RESOLUTION: 'Preview the outcome, then publish. This is when the death is announced.',
-  MASTER: 'The Master privately grants one vote immunity and one double vote for this round only.',
+  MASTER: 'The Master awards Most engaged and Best team player before tokens and purchases open.',
   VOTING: 'One timer. Everyone discusses and votes whenever they are ready. Every screen shows who voted for whom. Change or enter votes below for anyone having trouble.',
   RESULTS: 'Reveal the outcome, then close the session.',
   FINISHED: 'The game has ended.'

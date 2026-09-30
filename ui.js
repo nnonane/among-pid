@@ -1,4 +1,4 @@
-/* mafia v0.9 | ui.js | 30 Sep 2026 */
+/* mafia v1.0 | ui.js | 30 Sep 2026 */
 /*
   Rendering and admin controls. Talks to store.js and engine.js only.
   Contains NO game rules — anything that decides an outcome lives in engine.js.
@@ -528,9 +528,9 @@ function render() {
     [E.PHASE.ATTENDANCE]: viewAttendance,
     [E.PHASE.HIDDEN_ACTIONS]: viewHiddenActions,
     [E.PHASE.MINIGAME]: viewMinigame,
+    [E.PHASE.MASTER]: viewMaster,
     [E.PHASE.REWARDS]: viewRewards,
     [E.PHASE.RESOLUTION]: viewResolution,
-    [E.PHASE.MASTER]: viewMaster,
     [E.PHASE.VOTING]: viewVoting,
     [E.PHASE.RESULTS]: viewResults,
     [E.PHASE.FINISHED]: viewFinished
@@ -1193,10 +1193,7 @@ function viewResolution(main) {
       box.innerHTML = `
         <h3>Preview — not yet published</h3>
         <div class="${res.death ? 'warnbox' : 'okbox'}">
-          ${res.death
-            ? `<strong>${esc(nameOf(res.death))}</strong> will be killed.`
-            : res.blockedBy === 'IMMUNITY' ? 'No death — the target was immune.'
-            : 'No death this week.'}
+          ${esc(res.publicEvent.text)}
         </div>
         <div class="btn-row">
           <button class="btn primary" id="publish">Publish this outcome</button>
@@ -1222,7 +1219,7 @@ function viewResolution(main) {
       ? `<div class="detail">Alignment revealed: ${esc(pending.alignment)}</div>` : ''}`);
   card.appendChild(rev);
   card.appendChild(el('p', 'faint',
-    'Advance to the Master phase when ready.'));
+    'Advance to Discuss & vote when ready.'));
   main.appendChild(card);
 }
 
@@ -1245,7 +1242,7 @@ async function publishResolution(res) {
     }));
   }, {
     eventType: 'RESOLUTION_PUBLISHED',
-    summary: res.death ? `${nameOf(res.death)} was killed` : 'No death this week',
+    summary: res.publicEvent.text,
     trackDiff: true
   });
 
@@ -1295,31 +1292,60 @@ function viewMaster(main) {
       <p class="hint">Enable the Master role in Settings if you want to use it.</p>`));
     return;
   }
-
-  const m = S().currentMaster || {};
+  const current = S().currentMaster || E.blankMasterAwards();
+  const confirmed = !!current.confirmed;
   const card = el('div', 'card private');
   card.innerHTML = `
-    <h2>Master intervention</h2>
-    <p class="hint">${esc(PHASE_HINT.MASTER)} Both selections apply to this round's public vote only.</p>
-    <label class="field"><span>Vote immunity — cannot be eliminated this vote</span>
-      ${targetSelect('immune', m.immunePlayerId)}</label>
-    <label class="field"><span>Double vote — their ballot counts twice</span>
-      ${targetSelect('dbl', m.doubleVotePlayerId)}</label>
-    <div class="okbox">Keep both selections private. The vote totals will not reveal them.</div>`;
+    <h2>Master awards</h2>
+    <p class="hint">Choose a living, present player or leave an award blank. Confirmed awards are public and cannot be changed this week.</p>
+    <div id="masterRows"></div>
+    <div class="btn-row"><button class="btn primary" id="confirmAwards" ${confirmed ? 'disabled' : ''}>${confirmed ? 'Awards confirmed' : 'Confirm awards'}</button></div>
+    ${confirmed ? '<div class="okbox">Awards are confirmed. Token prizes have been paid and selections are locked.</div>' : ''}`;
   main.appendChild(card);
-
-  const [a, b] = card.querySelectorAll('select');
-  a.onchange = async () => {
-    await commitQuiet((d) => {
-      d.currentMaster = { ...(d.currentMaster || {}), immunePlayerId: a.value || null };
+  const rows = card.querySelector('#masterRows');
+  for (const award of current.awards || E.blankMasterAwards().awards) {
+    const row = el('div', 'action-row');
+    row.innerHTML = `<div class="who">${esc(award.title)}</div>
+      ${targetSelect('recipient', award.playerId, { pool: present(), blank: 'Not awarded this week' })}
+      <select data-prize>
+        <option value="TOKEN"${award.prize === 'TOKEN' ? ' selected' : ''}>+1 token</option>
+        <option value="DOUBLE_VOTE"${award.prize === 'DOUBLE_VOTE' ? ' selected' : ''}>Double vote</option>
+      </select>`;
+    const recipient = row.querySelector('[data-field="recipient"]');
+    const prize = row.querySelector('[data-prize]');
+    recipient.disabled = prize.disabled = confirmed;
+    const save = async () => {
+      if (S().currentMaster?.confirmed) return toast('Awards are already confirmed and cannot be changed this week.', true);
+      await commitQuiet((d) => {
+        const m = d.currentMaster || E.blankMasterAwards();
+        d.currentMaster = { ...m, awards: m.awards.map((x) => x.key === award.key
+          ? { ...x, playerId: recipient.value || null, prize: prize.value } : x) };
+      });
+    };
+    recipient.onchange = save;
+    prize.onchange = save;
+    rows.appendChild(row);
+  }
+  card.querySelector('#confirmAwards').onclick = async () => {
+    const result = E.confirmMasterAwards(S(), S().currentMaster?.awards || []);
+    if (!result.ok) return toast(result.reason, true);
+    if (!result.changed) return toast(result.reason);
+    const given = result.state.currentMaster.awards.filter((a) => a.playerId);
+    await commit((d) => {
+      Object.assign(d, result.state);
+      const now = new Date().toISOString();
+      const entries = given.length ? given.map((a) => ({
+        id: 'a_' + Math.random().toString(36).slice(2, 10), timestamp: now,
+        round: d.game.currentRound, eventType: 'MASTER_AWARD', actorId: a.playerId,
+        summary: `Master: ${a.title} – ${nameOf(a.playerId)} (${a.prize === 'TOKEN' ? '+1 token' : 'double vote'})`
+      })) : [{
+        id: 'a_' + Math.random().toString(36).slice(2, 10), timestamp: now,
+        round: d.game.currentRound, eventType: 'MASTER_AWARDS_CONFIRMED',
+        summary: 'Master: no awards given this week'
+      }];
+      d.audit = [...(d.audit || []), ...entries];
     });
-    toast('Immunity recorded privately.');
-  };
-  b.onchange = async () => {
-    await commitQuiet((d) => {
-      d.currentMaster = { ...(d.currentMaster || {}), doubleVotePlayerId: b.value || null };
-    });
-    toast('Double vote recorded privately.');
+    toast('Master awards confirmed and announced.');
   };
 }
 
@@ -1369,7 +1395,7 @@ const addVoteTime = (secs) => {
 const ballotWeight = (voterId) => {
   const p = byId(voterId);
   return 1 + (p && isStaged(p, E.ITEM.EXTRA_VOTE) ? 1 : 0)
-           + (S().currentMaster?.doubleVotePlayerId === voterId ? 1 : 0);
+           + (E.masterDoubleVoteIds(S().currentMaster).includes(voterId) ? 1 : 0);
 };
 
 /**
@@ -1392,8 +1418,8 @@ function voteBoard(ballots, candidates, { title = 'Vote board', final = false, o
     <h2>${esc(title)}
       <span class="badge ${voted.size >= candidates.length ? 'alive' : 'dormant'}">${voted.size} of ${candidates.length} voted</span></h2>
     <p class="hint">${final
-      ? 'Final ballots. The result above includes hidden weights, so it can differ from a simple count.'
-      : 'This is what every player sees. The ×2 markers are hidden weights — only you can see them.'}</p>
+      ? 'Final ballots. Extra Vote and Vote Manipulation can still make the result differ from a simple count.'
+      : 'Master double votes are public and marked ×2. Extra Vote and Vote Manipulation stay hidden.'}</p>
     <div class="vote-board">${candidates.map((p) => {
       const vs = byTarget.get(p.id) || [];
       const lead = vs.length && vs.length === top;
@@ -1407,8 +1433,8 @@ function voteBoard(ballots, candidates, { title = 'Vote board', final = false, o
         </div>
         <div class="vote-chips">${vs.length
           ? vs.map((v) => {
-              const w = ballotWeight(v);
-              return `<span class="vote-chip">${esc(nameOf(v))}${w > 1 ? ` <b>×${w}</b>` : ''}</span>`;
+              const masterX2 = E.masterDoubleVoteIds(S().currentMaster).includes(v);
+              return `<span class="vote-chip">${esc(nameOf(v))}${masterX2 ? ' <b>×2</b>' : ''}</span>`;
             }).join('')
           : '<span class="vote-none">No votes</span>'}</div>
       </div>`;
@@ -1524,7 +1550,7 @@ function viewVoting(main) {
   go.innerHTML = `<div class="btn-row" style="margin:0">
     <button class="btn primary" id="tally">Tally the vote</button></div>
     <p class="faint" style="margin-top:10px">${ballots.length} of ${voters.length} votes in.
-      Tallying ends the phase and applies hidden weights, immunity and manipulation.</p>`;
+      Tallying ends the phase and applies vote weights and manipulation.</p>`;
   main.appendChild(go);
 
   go.querySelector('#tally').onclick = async () => {
@@ -1677,7 +1703,7 @@ async function advancePhase() {
       d.game.status = E.PHASE.ATTENDANCE;
       d.currentActions = [];
       d.currentBallots = [];
-      d.currentMaster = { immunePlayerId: null, doubleVotePlayerId: null };
+      d.currentMaster = E.blankMasterAwards();
       d.currentManipulation = null;
       d.currentWinners = [];
       d.currentMinigameId = null;
@@ -1706,6 +1732,10 @@ async function advancePhase() {
   }
 
   // Guard rails — warn, but never block the admin.
+  if (g.status === E.PHASE.MASTER && settings().masterEnabled && !S().currentMaster?.confirmed) {
+    if (!(await confirmAction('Advance without confirming awards?',
+      'No Master awards have been confirmed. Any selections will not be announced or applied.'))) return;
+  }
   if (g.status === E.PHASE.RESOLUTION && !S().pendingPublicEvent) {
     if (!(await confirmAction('Advance without publishing?',
       'No resolution has been published this week. The death or no-death result will be skipped.'))) return;
@@ -1716,7 +1746,11 @@ async function advancePhase() {
       'Winners are ticked but Award tokens & points has not been pressed. Nobody has been paid.'))) return;
   }
 
-  await commit((d) => { d.game.status = E.nextPhase(d.game.status); });
+  await commit((d) => {
+    let next = E.nextPhase(d.game.status);
+    if (next === E.PHASE.MASTER && !settings().masterEnabled) next = E.PHASE.REWARDS;
+    d.game.status = next;
+  });
 
   /* Entering Discuss & vote starts the clock on every screen. Only the first
      time this week - rewinding and coming back leaves it as it was. */
@@ -1752,7 +1786,7 @@ async function closeSession() {
     d.currentVoteResult = null;
     d.currentManipulation = null;
     d.voteTimer = null;
-    d.currentMaster = { immunePlayerId: null, doubleVotePlayerId: null };
+    d.currentMaster = E.blankMasterAwards();
   }, { eventType: 'SESSION_CLOSED', summary: `Week ${S().game.currentRound} closed` });
 
   toast('Session closed. Nothing will change until you open the next one.');
@@ -1761,8 +1795,11 @@ async function closeSession() {
 async function rewindPhase() {
   if (!(await confirmAction('Rewind a phase?',
     'Data already entered is kept, but anything published stays published.'))) return;
-  await commit((d) => { d.game.status = E.previousPhase(d.game.status); },
-    { eventType: 'PHASE_REWIND', summary: 'Admin rewound a phase' });
+  await commit((d) => {
+    let prior = E.previousPhase(d.game.status);
+    if (prior === E.PHASE.MASTER && !settings().masterEnabled) prior = E.PHASE.MINIGAME;
+    d.game.status = prior;
+  }, { eventType: 'PHASE_REWIND', summary: 'Admin rewound a phase' });
 }
 
 /* ================================================ PLAYER OVERRIDES ===== */

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- mafia v0.9 | player.html | 30 Sep 2026 | visual layer v1.0 (cartoon skin) -->
+<!-- mafia v1.0 | player.html | 30 Sep 2026 | visual layer v1.0 (cartoon skin) -->
 <!--
   v0.7: Doctor and Sheriff retired. Only the Mafia have a night action;
   everyone else is a Civilian. A seat still marked Doctor or Sheriff in the
@@ -416,6 +416,7 @@
   <div id="alertCard"></div>
   <div class="phase-progress hide" id="phaseProgress" aria-label="Session progress"></div>
   <div id="phaseCard"></div>
+  <div id="masterAwardsCard"></div>
 
   <div class="card role-summary hide" id="roleCard">
     <div class="me-av" id="meAv" aria-hidden="true"></div>
@@ -513,15 +514,15 @@ const RETIRED = ['DOCTOR', 'SHERIFF'];
 const retire = (row) => (row && RETIRED.includes(row.role))
   ? { ...row, role: 'CIVILIAN', alignment: 'GOOD' } : row;
 
-const PHASE_ORDER=['ATTENDANCE','HIDDEN_ACTIONS','MINIGAME','REWARDS','RESOLUTION','MASTER','VOTING','RESULTS'];
-const PHASE_SHORT={ATTENDANCE:'Start',HIDDEN_ACTIONS:'Actions',MINIGAME:'Game',REWARDS:'Rewards',RESOLUTION:'Result',MASTER:'Master',VOTING:'Vote',RESULTS:'End'};
+const PHASE_ORDER=['ATTENDANCE','HIDDEN_ACTIONS','MINIGAME','MASTER','REWARDS','RESOLUTION','VOTING','RESULTS'];
+const PHASE_SHORT={ATTENDANCE:'Start',HIDDEN_ACTIONS:'Actions',MINIGAME:'Game',MASTER:'Master',REWARDS:'Rewards',RESOLUTION:'Result',VOTING:'Vote',RESULTS:'End'};
 const PHASE_STYLE={HIDDEN_ACTIONS:'hidden',MINIGAME:'minigame',REWARDS:'rewards',RESOLUTION:'results',MASTER:'hidden',VOTING:'voting',RESULTS:'results',FINISHED:'finished',CLOSED:'closed',ATTENDANCE:'discussion'};
 const IDLE = {
   CLOSED:      ['Nothing is running', 'The session is closed. Your role, tokens and items are all safe until Hunter opens the next week.'],
   ATTENDANCE:  ['Session starting', 'Hunter is marking who is here. Hold tight.'],
   MINIGAME:    ['Minigame', 'Play the game. Winners take a Reward Token.'],
   RESOLUTION:  ['Resolving', 'The night is being resolved. Watch the call.'],
-  MASTER:      ['Master intervention', 'Nothing for you to do right now.'],
+  MASTER:      ['Master awards', 'The Master is handing out this week’s Most engaged and Best team player awards.'],
   RESULTS:     ['Results', 'The vote is in.'],
   FINISHED:    ['Game over', 'That is the end of this game.']
 };
@@ -535,6 +536,7 @@ let myAction = null;
 let myBallot = null;
 let ballots = [];           // every ballot this week - the vote board is public
 let voteTimer = null;       // shared clock row from vote_timer
+let masterAwards = [];       // confirmed public Master awards from game_phase
 let selected = null;        // tile tapped but not yet confirmed
 let myPurchases = [];
 let mafiaPeers = null;      // null = not loaded, [] = genuinely none
@@ -624,7 +626,8 @@ async function refresh() {
 
   if (meRes.data && meRes.data.length) me = retire(meRes.data[0]);
   phase = (phaseRes.data && phaseRes.data[0])
-    ?? { phase: 'CLOSED', current_round: 0, public_text: '', winner: '', eliminated_id: '', eliminated_role: '' };
+    ?? { phase: 'CLOSED', current_round: 0, public_text: '', winner: '', eliminated_id: '', eliminated_role: '', master_awards: [] };
+  masterAwards = Array.isArray(phase.master_awards) ? phase.master_awards : [];
   roster = rosterRes.data ?? [];
 
   const r = round();
@@ -725,6 +728,7 @@ function paint() {
 
   paintAlert();
   paintPhase();
+  paintMasterAwards();
   paintMafia();
   paintInbox();
   paintRoster();
@@ -920,7 +924,7 @@ function paintVote(host, final = false) {
 
   const who = final && phase.eliminated_id ? nameOf(phase.eliminated_id) : null;
   const hint = final
-    ? 'Items and the Master can change the final count, so it may not match the names below.'
+    ? 'Extra Vote and Vote Manipulation can change the final count. Master double votes are marked ×2.'
     : !alive() ? 'You are out, so you can watch but not vote.'
     : timeUp ? "Time's up. Hunter is counting the votes."
     : 'Tap a name, then confirm. Everyone can see who you pick. Change it as often as you like until time runs out.';
@@ -945,7 +949,7 @@ function paintVote(host, final = false) {
         <span class="vc">${vs.length || ''}</span>
       </div>
       <div class="vchips">${vs.length
-        ? vs.map((v) => `<span class="vchip${v === me.id ? ' me' : ''}">${crew(v, 'mini')}${esc(v === me.id ? 'You' : nameOf(v))}</span>`).join('')
+        ? vs.map((v) => { const x2 = masterAwards.some((a) => a.player_id === v && a.prize === 'DOUBLE_VOTE'); return `<span class="vchip${v === me.id ? ' me' : ''}">${crew(v, 'mini')}${esc(v === me.id ? 'You' : nameOf(v))}${x2 ? ' <b>×2</b>' : ''}</span>`; }).join('')
         : '<span class="vnone">No votes</span>'}</div>
     </div>`;
   }).join('');
@@ -1032,6 +1036,17 @@ setInterval(() => {
   if (lastLeft !== null && lastLeft > 0 && left === 0) { selected = null; paintPhase(); }
   lastLeft = left;
 }, 500);
+
+function paintMasterAwards() {
+  const host = $('masterAwardsCard');
+  if (!phase || phase.phase === 'CLOSED' || !masterAwards.length) return void (host.innerHTML = '');
+  const rows = masterAwards.filter((a) => a && a.player_id);
+  if (!rows.length) return void (host.innerHTML = '');
+  host.innerHTML = card('quiet', `<h2>Master awards</h2>${rows.map((a) => `
+    <div class="item"><div style="display:flex;align-items:center;gap:10px">${crew(a.player_id)}
+      <div><div class="t">${esc(a.title)}: ${esc(a.display_name)}</div>
+      <div class="d">${a.prize === 'TOKEN' ? '+1 token' : 'Double vote ×2'}</div></div></div></div>`).join('')}`);
+}
 
 /* ------------------------------------------------------ side panels --- */
 

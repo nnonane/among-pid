@@ -1,4 +1,4 @@
-/* mafia v0.2.6 | store.js | 30 Sep 2026 */
+/* mafia v1.0 | store.js | 30 Sep 2026 */
 /*
   ALL persistence lives here. No game rules. No DOM.
   This is the swappable adapter: replacing the LocalAdapter with a Supabase
@@ -12,7 +12,8 @@ import {
   ATTENDANCE,
   PHASE,
   DEFAULT_SETTINGS,
-  RETIRED_ROLES
+  RETIRED_ROLES,
+  blankMasterAwards
 } from './engine.js';
 
 export const SCHEMA_VERSION = 1;
@@ -79,7 +80,7 @@ export function blankState(name = 'Weekly Mafia') {
     rounds: [],
     currentActions: [],
     currentBallots: [],
-    currentMaster: { immunePlayerId: null, doubleVotePlayerId: null },
+    currentMaster: blankMasterAwards(),
     currentManipulation: null,
     voteTimer: null,          // { round, endsAt, remaining } - discuss & vote clock
     pendingPublicEvent: null,
@@ -208,6 +209,21 @@ export function migrate(state) {
   state.game.settings = { ...DEFAULT_SETTINGS, ...(state.game.settings || {}) };
   // Discussion was merged into Voting. A save paused in it resumes there.
   if (state.game.status === 'DISCUSSION') state.game.status = PHASE.VOTING;
+  // Old Master saves contained private immunity and one double-vote id. Both
+  // are retired. Start the new public awards unconfirmed for safety.
+  if (!state.currentMaster || !Array.isArray(state.currentMaster.awards)) {
+    state.currentMaster = blankMasterAwards();
+  } else {
+    const fresh = blankMasterAwards();
+    state.currentMaster = {
+      confirmed: !!state.currentMaster.confirmed,
+      awards: fresh.awards.map((def) => ({
+        ...def,
+        ...(state.currentMaster.awards.find((a) => a.key === def.key) || {})
+      })),
+      paidAwardKeys: Array.isArray(state.currentMaster.paidAwardKeys) ? state.currentMaster.paidAwardKeys : []
+    };
+  }
   // Repair audit entries written by a build that stored live references.
   // Any surviving cycle here would break the next save and export.
   state.audit = (state.audit || []).map((entry) => {

@@ -1,4 +1,4 @@
-/* mafia v0.3 | engine.js | 30 Sep 2026 */
+/* mafia v1.0 | engine.js | 30 Sep 2026 */
 /*
   v0.2: Doctor and Sheriff retired. Every non-Mafia player is a Civilian.
   The only night action is the Mafia kill; Temporary Immunity is the only
@@ -53,9 +53,9 @@ export const PHASE_ORDER = [
   PHASE.ATTENDANCE,
   PHASE.HIDDEN_ACTIONS,
   PHASE.MINIGAME,
+  PHASE.MASTER,
   PHASE.REWARDS,
   PHASE.RESOLUTION,
-  PHASE.MASTER,
   PHASE.VOTING,
   PHASE.RESULTS
 ];
@@ -298,6 +298,7 @@ export function resolveHiddenActions(state, rng) {
 
   // --- 4. Public event — sealed until after minigame and rewards -----------
   const victim = death ? byId.get(death) : null;
+  const survivor = blockedBy ? byId.get(mafiaTarget) : null;
   const publicEvent = death
     ? {
         type: 'DEATH',
@@ -306,7 +307,13 @@ export function resolveHiddenActions(state, rng) {
         revealAlignment: !!victim.flags?.revealAlignmentOnDeath,
         alignment: victim.flags?.revealAlignmentOnDeath ? victim.alignment : null
       }
-    : { type: 'NO_DEATH', text: 'No one was killed.' };
+    : blockedBy
+      ? {
+          type: 'SURVIVED',
+          playerId: mafiaTarget,
+          text: `The Mafia came for ${survivor.displayName} last night, but ${survivor.displayName} lived to tell the tale.`
+        }
+      : { type: 'NO_DEATH', text: 'No one was killed.' };
 
   return {
     mafiaTarget,
@@ -321,12 +328,62 @@ export function resolveHiddenActions(state, rng) {
 }
 
 // ---------------------------------------------------------------------------
+// Master awards
+// ---------------------------------------------------------------------------
+export const MASTER_PRIZE = { TOKEN: 'TOKEN', DOUBLE_VOTE: 'DOUBLE_VOTE' };
+export const MASTER_AWARD_DEFS = [
+  { key: 'MOST_ENGAGED', title: 'Most engaged', defaultPrize: MASTER_PRIZE.TOKEN },
+  { key: 'BEST_TEAM_PLAYER', title: 'Best team player', defaultPrize: MASTER_PRIZE.DOUBLE_VOTE }
+];
+export function blankMasterAwards() {
+  return {
+    confirmed: false,
+    awards: MASTER_AWARD_DEFS.map((a) => ({ ...a, playerId: null, prize: a.defaultPrize })),
+    paidAwardKeys: []
+  };
+}
+export function masterDoubleVoteIds(master = {}) {
+  if (!master.confirmed) return [];
+  return [...new Set((master.awards || [])
+    .filter((a) => a.playerId && a.prize === MASTER_PRIZE.DOUBLE_VOTE)
+    .map((a) => a.playerId))];
+}
+/** Pure, idempotent confirmation. Confirmed awards cannot be edited. */
+export function confirmMasterAwards(state, proposedAwards = []) {
+  const existing = state.currentMaster || blankMasterAwards();
+  if (existing.confirmed) {
+    const same = JSON.stringify(existing.awards || []) === JSON.stringify(proposedAwards || []);
+    return { ok: same, changed: false, reason: same ? 'Awards already confirmed.' : 'Awards are already confirmed and cannot be changed.', state };
+  }
+  const eligible = new Set(state.players.filter(isPresent).map((p) => p.id));
+  const defs = new Map(MASTER_AWARD_DEFS.map((a) => [a.key, a]));
+  const awards = MASTER_AWARD_DEFS.map((def) => {
+    const pick = proposedAwards.find((a) => a.key === def.key) || {};
+    const playerId = pick.playerId && eligible.has(pick.playerId) ? pick.playerId : null;
+    const prize = Object.values(MASTER_PRIZE).includes(pick.prize) ? pick.prize : def.defaultPrize;
+    return { key: def.key, title: def.title, defaultPrize: def.defaultPrize, playerId, prize };
+  });
+  const paidAwardKeys = [];
+  const players = state.players.map((p) => {
+    const tokenAwards = awards.filter((a) => a.playerId === p.id && a.prize === MASTER_PRIZE.TOKEN);
+    if (!tokenAwards.length) return p;
+    paidAwardKeys.push(...tokenAwards.map((a) => a.key));
+    return { ...p, rewardTokens: (p.rewardTokens || 0) + tokenAwards.length };
+  });
+  return {
+    ok: true,
+    changed: true,
+    state: { ...state, players, currentMaster: { confirmed: true, awards, paidAwardKeys } }
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Public vote
 // ---------------------------------------------------------------------------
 
 /**
  * @param ballots [{voterId, targetId}]
- * @param master {immunePlayerId, doubleVotePlayerId}
+ * @param master {confirmed, awards:[{key,title,playerId,prize}]}
  * @param manipulation {targetId, delta} — anonymous Mafia adjustment
  */
 export function resolveVote(state, ballots, master = {}, manipulation = null) {
@@ -346,7 +403,7 @@ export function resolveVote(state, ballots, master = {}, manipulation = null) {
     const voter = byId.get(b.voterId);
     let weight = 1;
     if (hasStagedItem(voter, ITEM.EXTRA_VOTE, round)) weight += 1;
-    if (master.doubleVotePlayerId === b.voterId) weight += 1;
+    if (masterDoubleVoteIds(master).includes(b.voterId)) weight += 1;
     totals[b.targetId] = (totals[b.targetId] || 0) + weight;
   }
 
@@ -356,10 +413,9 @@ export function resolveVote(state, ballots, master = {}, manipulation = null) {
     log.push({ step: 'voteManipulation', targetId: manipulation.targetId, delta });
   }
 
-  // Master immunity and temporary immunity remove a player from elimination
-  // consideration, but their votes still counted above.
+  // Temporary Immunity removes a player from elimination consideration,
+  // but their votes still counted above. Master immunity no longer exists.
   const shielded = new Set();
-  if (master.immunePlayerId) shielded.add(master.immunePlayerId);
   if (settings.tempImmunityCoversVote) {
     for (const p of state.players) {
       if (hasUsableItem(p, ITEM.TEMP_IMMUNITY, round)) shielded.add(p.id);

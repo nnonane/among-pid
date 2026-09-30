@@ -1,4 +1,4 @@
-/* mafia v0.3 | tests.js | 30 Sep 2026 */
+/* mafia v1.0 | tests.js | 30 Sep 2026 */
 /* Disposable test harness. Runs in Node or in the browser via tests.html. */
 
 import * as E from './engine.js';
@@ -139,6 +139,16 @@ test('Temporary Immunity blocks the kill', () => {
   const r = E.resolveHiddenActions(s, E.makeRng(1));
   eq(r.death, null);
   eq(r.blockedBy, 'IMMUNITY');
+  eq(r.publicEvent.type, 'SURVIVED');
+  eq(r.publicEvent.playerId, 'c1');
+  assert(r.publicEvent.text.includes(s.players.find(p => p.id === 'c1').displayName), 'names target');
+  assert(!/immunity/i.test(r.publicEvent.text), 'does not reveal immunity');
+});
+test('no Mafia ballots still announces No one was killed', () => {
+  const s = makeState(baseCast);
+  const r = E.resolveHiddenActions(s, E.makeRng(1));
+  eq(r.publicEvent.type, 'NO_DEATH');
+  eq(r.publicEvent.text, 'No one was killed.');
 });
 
 test('Dormant players cannot act or be targeted', () => {
@@ -203,35 +213,29 @@ test('Extra Vote adds one weight', () => {
   eq(r.eliminated, 'm1');
 });
 
-test('Master double vote adds one weight', () => {
+test('Master double-vote award gives that ballot weight 2', () => {
   const s = makeState(baseCast);
+  const master = { confirmed: true, awards: [{ key:'MOST_ENGAGED', playerId:'c1', prize:'DOUBLE_VOTE' }] };
   const r = E.resolveVote(s, [
     { voterId: 'c1', targetId: 'm1' }, { voterId: 'c2', targetId: 'c3' }
-  ], { doubleVotePlayerId: 'c1' });
-  eq(r.totals.m1, 2);
+  ], master);
+  eq(r.totals.m1, 2); eq(r.eliminated, 'm1');
+});
+test('two double-vote awards for one player are capped at weight 2', () => {
+  const s = makeState(baseCast);
+  const master = { confirmed:true, awards:[
+    { key:'MOST_ENGAGED', playerId:'c1', prize:'DOUBLE_VOTE' },
+    { key:'BEST_TEAM_PLAYER', playerId:'c1', prize:'DOUBLE_VOTE' }
+  ] };
+  eq(E.resolveVote(s, [{ voterId:'c1', targetId:'m1' }], master).totals.m1, 2);
+});
+test('old Master immunity no longer protects anyone', () => {
+  const s = makeState(baseCast);
+  const r = E.resolveVote(s, [
+    { voterId:'c1', targetId:'m1' }, { voterId:'c2', targetId:'m1' }, { voterId:'c3', targetId:'c2' }
+  ], { immunePlayerId:'m1' });
   eq(r.eliminated, 'm1');
 });
-
-test('Master immunity removes the leader from elimination', () => {
-  const s = makeState(baseCast);
-  const r = E.resolveVote(s, [
-    { voterId: 'c1', targetId: 'm1' }, { voterId: 'c2', targetId: 'm1' },
-    { voterId: 'c3', targetId: 'c2' }
-  ], { immunePlayerId: 'm1' });
-  eq(r.eliminated, 'c2', 'next eligible total is eliminated');
-  eq(r.totals.m1, 2, 'votes still counted publicly');
-});
-
-test('Master immunity leaving a tie means no elimination', () => {
-  const s = makeState(baseCast);
-  const r = E.resolveVote(s, [
-    { voterId: 'c1', targetId: 'm1' }, { voterId: 'c2', targetId: 'c2' },
-    { voterId: 'c3', targetId: 'c3' }
-  ], { immunePlayerId: 'm1' });
-  eq(r.eliminated, null);
-  eq(r.tie, true);
-});
-
 test('Vote Manipulation applies anonymously', () => {
   const s = makeState(baseCast);
   const r = E.resolveVote(s,
@@ -262,6 +266,31 @@ test('Spirits and Dormant players cannot vote or be voted for', () => {
   ]);
   eq(Object.keys(r.totals).length, 0);
   eq(r.eliminated, null);
+});
+
+// ===========================================================================
+suite('Master awards');
+test('token award pays exactly once, including after rewind', () => {
+  const s = makeState(baseCast); s.currentMaster = E.blankMasterAwards();
+  const picks = s.currentMaster.awards.map(a => a.key === 'MOST_ENGAGED' ? { ...a, playerId:'c1', prize:'TOKEN' } : a);
+  const first = E.confirmMasterAwards(s, picks);
+  eq(first.state.players.find(p => p.id === 'c1').rewardTokens, 1);
+  first.state.game.status = E.PHASE.MASTER;
+  const second = E.confirmMasterAwards(first.state, picks);
+  eq(second.state.players.find(p => p.id === 'c1').rewardTokens, 1); eq(second.changed, false);
+});
+test('switching an unconfirmed prize token to double vote and back works', () => {
+  const s = makeState(baseCast); s.currentMaster = E.blankMasterAwards();
+  let picks = s.currentMaster.awards.map(a => a.key === 'MOST_ENGAGED' ? { ...a, playerId:'c1', prize:'DOUBLE_VOTE' } : a);
+  eq(E.masterDoubleVoteIds({ confirmed:true, awards:picks }).join(), 'c1');
+  picks = picks.map(a => a.key === 'MOST_ENGAGED' ? { ...a, prize:'TOKEN' } : a);
+  eq(E.masterDoubleVoteIds({ confirmed:true, awards:picks }).length, 0);
+  eq(E.confirmMasterAwards(s, picks).state.players.find(p => p.id === 'c1').rewardTokens, 1);
+});
+test('blank awards do nothing', () => {
+  const s = makeState(baseCast); s.currentMaster = E.blankMasterAwards();
+  const r = E.confirmMasterAwards(s, s.currentMaster.awards);
+  assert(r.state.players.every(p => p.rewardTokens === 0)); eq(E.masterDoubleVoteIds(r.state.currentMaster).length, 0);
 });
 
 // ===========================================================================
@@ -468,16 +497,16 @@ test('phases advance in the documented order', () => {
   eq(E.nextPhase(E.PHASE.CLOSED), E.PHASE.ATTENDANCE);
   eq(E.nextPhase(E.PHASE.ATTENDANCE), E.PHASE.HIDDEN_ACTIONS);
   eq(E.nextPhase(E.PHASE.HIDDEN_ACTIONS), E.PHASE.MINIGAME);
-  eq(E.nextPhase(E.PHASE.MINIGAME), E.PHASE.REWARDS);
+  eq(E.nextPhase(E.PHASE.MINIGAME), E.PHASE.MASTER);
+  eq(E.nextPhase(E.PHASE.MASTER), E.PHASE.REWARDS);
   eq(E.nextPhase(E.PHASE.REWARDS), E.PHASE.RESOLUTION);
-  eq(E.nextPhase(E.PHASE.RESOLUTION), E.PHASE.MASTER);
-  eq(E.nextPhase(E.PHASE.MASTER), E.PHASE.VOTING, 'discussion and voting are one phase');
+  eq(E.nextPhase(E.PHASE.RESOLUTION), E.PHASE.VOTING, 'discussion and voting are one phase');
   eq(E.nextPhase(E.PHASE.VOTING), E.PHASE.RESULTS);
 });
 
 test('RESULTS loops back to CLOSED', () => eq(E.nextPhase(E.PHASE.RESULTS), E.PHASE.CLOSED));
 test('FINISHED is terminal', () => eq(E.nextPhase(E.PHASE.FINISHED), E.PHASE.FINISHED));
-test('rewind works', () => eq(E.previousPhase(E.PHASE.VOTING), E.PHASE.MASTER));
+test('rewind works', () => { eq(E.previousPhase(E.PHASE.VOTING), E.PHASE.RESOLUTION); eq(E.previousPhase(E.PHASE.REWARDS), E.PHASE.MASTER); });
 test('there is no separate Discussion phase', () => {
   assert(!('DISCUSSION' in E.PHASE), 'DISCUSSION constant removed');
   assert(!E.PHASE_ORDER.includes('DISCUSSION'), 'not in the phase order');
@@ -521,14 +550,14 @@ test('ballots are public: every player sees who voted for whom', () => {
   eq(view.currentBallots[0].source, undefined, 'nothing beyond voter and target leaks');
 });
 
-test('public ballots do not reveal hidden weights', () => {
-  const cast = baseCast.map(p => p.id === 'c1'
-    ? { ...p, inventory: [staged(E.ITEM.EXTRA_VOTE, 1)] } : p);
-  const s = makeState(cast);
-  s.currentBallots = [{ voterId: 'c1', targetId: 'm1' }];
-  const view = E.visibleStateFor(s, s.players.find(p => p.id === 'c2'));
+test('public ballots reveal only Master x2, not shop or manipulation weights', () => {
+  const cast = baseCast.map(p => p.id === 'c1' ? { ...p, inventory:[staged(E.ITEM.EXTRA_VOTE, 1)] } : p);
+  const s = makeState(cast); s.currentBallots = [{ voterId:'c1', targetId:'m1' }];
+  s.currentMaster = { confirmed:true, awards:[{ key:'MOST_ENGAGED', playerId:'c2', prize:'DOUBLE_VOTE' }] };
+  const view = E.visibleStateFor(s, s.players.find(p => p.id === 'c3'));
   eq(JSON.stringify(view.currentBallots), '[{"voterId":"c1","targetId":"m1"}]');
   eq(view.players.find(p => p.id === 'c1').inventory, null, 'Extra Vote stays private');
+  eq(E.masterDoubleVoteIds(s.currentMaster).join(), 'c2', 'confirmed Master x2 is public metadata');
 });
 
 test('balances of other players are hidden', () => {
@@ -635,6 +664,13 @@ test('a save paused in the old Discussion phase resumes in Discuss & vote', asyn
   eq(store.get().game.settings.voteMinutes, 5, 'timer setting backfilled');
 });
 
+test('old Master saves drop immunity and private double vote fields', async () => {
+  const store = new Store(new MemoryAdapter()); await store.init();
+  const old = makeState(baseCast); old.currentMaster = { immunePlayerId:'m1', doubleVotePlayerId:'c1' };
+  await store.importJson(JSON.stringify(old));
+  const m = store.get().currentMaster;
+  eq(m.confirmed, false); eq(m.awards.length, 2); eq(m.immunePlayerId, undefined); eq(m.doubleVotePlayerId, undefined);
+});
 test('a corrupt import is rejected', async () => {
   const store = new Store(new MemoryAdapter());
   await store.init();
