@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<!-- mafia v1.1 | spectator.html | 06 Oct 2026 | visual layer v1.0 (cartoon skin) -->
+<!--
+  THE SPECTATOR SCREEN.
+  Read-only. Same look as player.html. Shows the week, the phase, public
+  announcements, Master awards and - above all - the live vote board.
+
+  NOTHING SPOILS THE GAME. This page only ever reads things every player
+  can already see on their own screen:
+    game_phase   phase, week, published announcement, voted-out role
+    roster       names and alive / out
+    ballots      who voted for whom (public by design since v0.8)
+    vote_timer   the shared clock
+  It never reads players, actions, purchases, private_events or
+  mafia_peers. Roles, tokens, items and Mafia picks are never requested,
+  so they cannot leak here even by accident.
+
+  Sign in with any Supabase account. A dedicated "spectator" account that
+  is not linked to a seat is the intended use. No SQL changes needed.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Among PID — Spectator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600;700&family=Nunito:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  /* =====================================================================
+     AMONG PID - spectator screen. Identical skin to player.html.
+     Spacing scale: 4 / 8 / 12 / 16 / 20 / 24 / 32
+     Radii: 20 panels, 16 controls and tiles, 12 small, 999 pills
+     ===================================================================== */
+  :root {
+    --ink: #0a0e22;
+    --panel: #1c2650;
+    --panel-2: #131a3d;
+    --text: #eef2ff;
+    --muted: #b7c3e6;
+    --faint: #8e9bc4;
+    --red: #ff4d4d;
+    --cyan: #38d9f5;
+    --yellow: #ffd23f;
+    --green: #4ade80;
+    --line: 3px solid var(--ink);
+    --drop: 0 6px 0 var(--ink);
+    --drop-sm: 0 4px 0 var(--ink);
+    --o2: -2px -2px 0 var(--ink), 2px -2px 0 var(--ink), -2px 2px 0 var(--ink), 2px 2px 0 var(--ink),
+          0 -2px 0 var(--ink), 0 2px 0 var(--ink), -2px 0 0 var(--ink), 2px 0 0 var(--ink), 0 4px 0 var(--ink);
+    --o3: -3px -3px 0 var(--ink), 3px -3px 0 var(--ink), -3px 3px 0 var(--ink), 3px 3px 0 var(--ink),
+          0 -3px 0 var(--ink), 0 3px 0 var(--ink), -3px 0 0 var(--ink), 3px 0 0 var(--ink), 0 6px 0 var(--ink);
+    --head: "Fredoka", "Nunito", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { background: #070a1c; }
+  body { margin: 0; min-height: 100vh; color: var(--text); overflow-x: hidden;
+         font: 400 16px/1.5 "Nunito", system-ui, sans-serif; }
+
+  /* ---------------------------------------------------------- background */
+  body::before {
+    content: ""; position: fixed; inset: 0; z-index: -2; pointer-events: none;
+    background:
+      linear-gradient(rgba(5, 7, 22, .5), rgba(5, 7, 22, .5)),
+      url("bg.jpg") center / cover no-repeat,
+      radial-gradient(1px 1px at 12% 18%, #fff 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 72% 12%, #fff 50%, transparent 51%),
+      radial-gradient(1px 1px at 38% 64%, #cfd8ff 50%, transparent 51%),
+      radial-gradient(2px 2px at 86% 58%, #fff 50%, transparent 51%),
+      radial-gradient(1px 1px at 22% 86%, #fff 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 58% 36%, #ffe9a8 50%, transparent 51%),
+      radial-gradient(1px 1px at 92% 90%, #fff 50%, transparent 51%),
+      radial-gradient(circle at 20% 10%, #2a1f5c 0, transparent 45%),
+      radial-gradient(circle at 85% 80%, #102a5c 0, transparent 50%),
+      #0a0d26;
+  }
+  body::after {
+    content: ""; position: fixed; inset: -200px 0 0 0; z-index: -1; pointer-events: none;
+    opacity: .7;
+    background-image:
+      radial-gradient(1.5px 1.5px at 20px 30px, #fff 50%, transparent 51%),
+      radial-gradient(1px 1px at 140px 90px, #dfe6ff 50%, transparent 51%),
+      radial-gradient(1px 1px at 90px 160px, #fff 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 170px 180px, #fff5cc 50%, transparent 51%);
+    background-size: 200px 200px;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    body::after { animation: drift 90s linear infinite; }
+    @keyframes drift { to { transform: translateY(200px); } }
+  }
+
+  /* -------------------------------------------------------------- layout */
+  .wrap { max-width: 560px; margin: 0 auto; padding: 24px 16px 48px; }
+  .hide { display: none !important; }
+
+  /* -------------------------------------------------------------- header */
+  .masthead { text-align: center; margin: 4px 0 20px; }
+  h1 { margin: 0; font: 700 44px/1 var(--head); letter-spacing: .04em;
+       text-transform: uppercase; color: #fff; text-shadow: var(--o3); }
+  h1 .accent { color: var(--red); }
+  .mrow { display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .week { display: inline-block; padding: 4px 16px;
+          font: 600 15px/1.4 var(--head); color: var(--ink); background: var(--yellow);
+          border: var(--line); border-radius: 999px; box-shadow: var(--drop-sm); }
+  .week:empty { display: none; }
+  /* Spectator-only: the live tag beside the week chip. */
+  .live { display: inline-flex; align-items: center; gap: 8px; padding: 4px 14px;
+          font: 600 15px/1.4 var(--head); color: #fff; background: var(--red);
+          border: var(--line); border-radius: 999px; box-shadow: var(--drop-sm);
+          letter-spacing: .06em; text-transform: uppercase; }
+  .live .dot { width: 10px; height: 10px; border-radius: 50%; background: #fff; border: 2px solid var(--ink); }
+  @media (prefers-reduced-motion: no-preference) {
+    .live .dot { animation: blink 1.4s ease-in-out infinite; }
+    @keyframes blink { 50% { opacity: .25; } }
+  }
+
+  /* --------------------------------------------------------------- cards */
+  .card { position: relative; background: var(--panel); border: var(--line);
+          border-radius: 20px; padding: 20px; margin-bottom: 20px; box-shadow: var(--drop); }
+  h2 { margin: 0 0 12px; font: 700 21px/1.2 var(--head); color: #fff;
+       text-shadow: var(--o2); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  h3 { margin: 0 0 8px; font: 700 28px/1.15 var(--head); color: var(--accent, #fff);
+       text-shadow: var(--o2); }
+  p.hint { margin: 0 0 16px; color: var(--muted); font-size: 15px; }
+
+  #phaseCard.phase-hidden   { --accent: #ff7a7a; }
+  #phaseCard.phase-minigame { --accent: var(--cyan); }
+  #phaseCard.phase-rewards  { --accent: var(--yellow); }
+
+  /* ----------------------------------------------------- login / start */
+  .login { text-align: center; padding: 24px 20px; }
+  .login-crew { display: flex; justify-content: center; align-items: flex-end; gap: 4px; margin: 0 0 8px; }
+  .login-crew .crew { width: 56px; height: 56px; }
+  .login-crew .crew:nth-child(2) { width: 72px; height: 72px; }
+  .login-title { justify-content: center; font-size: 30px; margin-bottom: 4px; }
+  .login .fields { text-align: left; }
+  .login p.hint { margin-bottom: 20px; }
+
+  /* -------------------------------------------------------------- forms */
+  label { display: block; margin: 0 0 6px; font: 600 15px/1.3 var(--head); color: var(--muted); }
+  input { width: 100%; min-height: 52px; margin: 0 0 16px; padding: 12px 14px;
+          font: 400 16px/1.3 "Nunito", sans-serif; color: var(--text);
+          background: var(--panel-2); border: var(--line); border-radius: 16px; }
+  input:focus { outline: none; border-color: var(--cyan);
+                box-shadow: 0 0 0 3px rgba(56, 217, 245, .35); }
+
+  /* ------------------------------------------------------------ buttons */
+  button { display: block; width: 100%; min-height: 52px; padding: 12px 20px; cursor: pointer;
+           font: 700 18px/1.2 var(--head); letter-spacing: .02em; color: #062530;
+           background: var(--cyan); border: var(--line); border-radius: 16px;
+           box-shadow: 0 5px 0 var(--ink); transition: transform .08s, box-shadow .08s, filter .12s; }
+  button:hover:not(:disabled) { filter: brightness(1.08); }
+  button:active:not(:disabled) { transform: translateY(4px); box-shadow: 0 1px 0 var(--ink); }
+  button:disabled { cursor: not-allowed; color: #8c95b5; background: #343d63; box-shadow: 0 3px 0 var(--ink); }
+  button.ghost { margin-top: 8px; color: #fff; background: #2d3970; }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--yellow); outline-offset: 3px; }
+
+  /* ---------------------------------------------------- message boxes */
+  .err, .ok, .note { margin: 0 0 16px; padding: 12px 16px; border-radius: 16px;
+                     border: 3px solid; font-size: 15px; font-weight: 700; }
+  .err  { background: #3d0f1a; border-color: var(--red); color: #ffd2d2; }
+  .ok   { background: #0f3a28; border-color: var(--green); color: #cff8de; }
+  .note { background: #141b42; border-color: var(--yellow); color: #ffe894; }
+
+  .announce { margin: 4px 0 0; padding: 20px 16px; text-align: center; border: var(--line);
+              border-radius: 16px; background: #070a1c; box-shadow: var(--drop-sm);
+              font: 700 24px/1.25 var(--head); color: #fff; text-shadow: var(--o2); }
+  .announce .ak { display: inline-block; margin-bottom: 12px; padding: 3px 14px; border: var(--line);
+                  border-radius: 999px; background: var(--yellow); color: var(--ink);
+                  font: 600 14px/1.4 var(--head); letter-spacing: .08em; text-transform: uppercase;
+                  text-shadow: none; }
+  .announce .at { display: block; }
+  .announce.sm { font-size: 18px; padding: 14px 14px; margin: 0 0 16px; }
+  .announce.sm .ak { margin-bottom: 8px; font-size: 13px; }
+
+  /* ---------------------------------------------------------- avatars */
+  .crew { display: block; width: 36px; height: 36px; flex: 0 0 auto; overflow: visible; }
+  .crew.mini { display: inline-block; width: 18px; height: 18px; vertical-align: -4px; margin-right: 4px; }
+  .crew.big { width: 96px; height: 96px; margin: 0 auto; }
+  .crew.ghost, .out .crew { opacity: .45; filter: grayscale(.7); }
+
+  /* ------------------------------------------------------ phase steps */
+  .phase-progress { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px; margin: 0 0 20px; }
+  .phase-progress .step { min-width: 0; padding: 8px 2px; text-align: center; border: var(--line);
+                          border-radius: 12px; background: var(--panel-2); box-shadow: 0 3px 0 var(--ink); }
+  .phase-progress .bar { display: none; }
+  .phase-progress .txt { display: block; font: 600 13px/1.2 var(--head); color: var(--faint);
+                         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .phase-progress .done { background: #1d4a38; }
+  .phase-progress .done .txt { color: #b9f5cf; }
+  .phase-progress .active { background: var(--yellow); transform: translateY(-2px); box-shadow: 0 5px 0 var(--ink); }
+  .phase-progress .active .txt { color: var(--ink); font-weight: 700; }
+  @media (max-width: 539px) {
+    .phase-progress { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+    .phase-progress .txt { font-size: 14px; }
+  }
+
+  /* --------------------------------------------------------- stat strip */
+  .stats { display: flex; gap: 12px; }
+  .stat { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+          text-align: left; background: var(--panel-2); border: var(--line); border-radius: 16px;
+          box-shadow: var(--drop-sm); }
+  .stat svg { width: 36px; height: 36px; flex: 0 0 36px; }
+  .stat .v { font: 700 28px/1 var(--head); color: #fff; text-shadow: var(--o2); }
+  .stat .k { margin-top: 4px; font: 600 14px/1.2 var(--head); color: var(--muted); }
+  #statsCard { padding: 16px; }
+
+  /* ----------------------------------------------- roster / people rows */
+  .people { display: grid; gap: 8px; }
+  @media (min-width: 480px) { #roster.people { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .who { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 12px;
+         background: var(--panel-2); border: var(--line); border-radius: 16px; }
+  .who .n { flex: 1; min-width: 0; font: 600 16px/1.3 var(--head); overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; }
+  .who.out .n { color: var(--faint); }
+  .status, .pill { display: inline-block; padding: 3px 12px; white-space: nowrap;
+                   font: 600 13px/1.4 var(--head); border: 2px solid var(--ink); border-radius: 999px; }
+  .status { background: #3a4266; color: #d7ddf3; }
+  .pill { background: #3a4266; color: #d7ddf3; }
+  .pill.wait { background: var(--yellow); color: var(--ink); }
+  .pill.on { background: var(--green); color: var(--ink); }
+
+  .item { display: flex; justify-content: space-between; align-items: center; gap: 12px;
+          margin: 0 0 10px; padding: 12px 14px; background: var(--panel-2);
+          border: var(--line); border-radius: 16px; }
+  .item:last-child { margin-bottom: 0; }
+  .item > div { min-width: 0; }
+  .item .t { font: 600 17px/1.3 var(--head); color: #fff; }
+  .item .d { margin-top: 2px; font-size: 14px; color: var(--muted); }
+
+  /* ------------------------------------------------ discuss & vote board */
+  .vtop { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .vtop h3 { margin: 0; }
+  .vclock { flex: 0 0 auto; padding: 6px 14px; font: 700 40px/1 var(--head);
+            font-variant-numeric: tabular-nums; color: var(--yellow); text-shadow: var(--o2);
+            background: #070a1c; border: var(--line); border-radius: 16px; box-shadow: var(--drop-sm); }
+  .vclock.done { color: var(--red); }
+  .vclock.paused { color: #9aa4c4; }
+  .vboard { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 4px 0 16px; }
+  .vtile { position: relative; min-width: 0; padding: 10px; background: var(--panel-2); border: var(--line);
+           border-radius: 16px; box-shadow: var(--drop-sm);
+           transition: transform .1s, box-shadow .15s, border-color .15s, background .15s; }
+  .vtile.lead { border-color: var(--yellow); background: #2b2a45;
+                box-shadow: 0 0 0 3px rgba(255, 210, 63, .35), 0 0 18px rgba(255, 210, 63, .35), var(--drop-sm); }
+  .vtile.gone { border-color: var(--red); background: #3b0d1c; }
+  .vhead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .vmeta { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+  .vhead .crew { width: 32px; height: 32px; }
+  .vn { max-width: 100%; font: 600 15px/1.2 var(--head); overflow: hidden; overflow-wrap: anywhere;
+        display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .vtick { padding: 1px 8px; font: 600 12px/1.4 var(--head); color: var(--ink);
+           background: var(--green); border: 2px solid var(--ink); border-radius: 999px; }
+  .vtick.outtag { background: var(--red); color: #fff; }
+  .vc { position: absolute; top: -10px; right: -8px; min-width: 32px; padding: 0 6px; height: 32px; display: grid; place-items: center;
+        font: 700 18px/1 var(--head); color: var(--ink); background: var(--yellow);
+        border: var(--line); border-radius: 999px; }
+  .vc:empty { display: none; }
+  .vchips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .vchip { max-width: 100%; padding: 2px 8px 2px 4px; font: 700 13px/1.4 "Nunito", sans-serif;
+           color: #dfe5fa; background: #2a3463; border: 2px solid var(--ink); border-radius: 999px;
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; animation: vpop .25s ease-out; }
+  .vnone { font-size: 14px; font-style: italic; color: var(--faint); }
+  @keyframes vpop { from { opacity: 0; transform: scale(.6); } to { opacity: 1; transform: none; } }
+  @media (max-width: 339px) { .vboard { grid-template-columns: 1fr; } }
+
+  /* Spectator-only: who is leading + who is still to vote. */
+  .lead-box { display: flex; align-items: center; gap: 12px; margin: 0 0 16px; padding: 12px 14px;
+              background: #2b2a45; border: 3px solid var(--yellow); border-radius: 16px;
+              box-shadow: var(--drop-sm); }
+  .lead-box .lk { font: 600 13px/1.3 var(--head); letter-spacing: .08em; text-transform: uppercase; color: var(--yellow); }
+  .lead-box .lv { font: 700 20px/1.25 var(--head); color: #fff; text-shadow: var(--o2); overflow-wrap: anywhere; }
+  .lead-box.tie { background: #141b42; }
+  .waiting { margin: 0 0 4px; font-size: 15px; color: var(--muted); }
+  .waiting strong { color: #fff; }
+
+  /* Spectator-only: live vote feed. */
+  .vfeed { display: grid; gap: 8px; }
+  .vf { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel-2);
+        border: var(--line); border-radius: 16px; animation: vpop .25s ease-out; }
+  .vf .crew { width: 28px; height: 28px; }
+  .vf .ft { flex: 1; min-width: 0; font: 600 15px/1.3 var(--head); overflow-wrap: anywhere; }
+  .vf .ft b { color: var(--yellow); font-weight: 700; }
+  .vf .fw { flex: 0 0 auto; font-size: 13px; color: var(--faint); }
+
+  /* ------------------------------------------------ voted-out reveal */
+  .reveal { margin: 8px -20px 16px; padding: 24px 16px; text-align: center; overflow: hidden;
+            border-top: var(--line); border-bottom: var(--line);
+            background:
+              radial-gradient(1.5px 1.5px at 8% 22%, #fff 50%, transparent 51%),
+              radial-gradient(1px 1px at 24% 70%, #fff 50%, transparent 51%),
+              radial-gradient(2px 2px at 40% 14%, #fff 50%, transparent 51%),
+              radial-gradient(1px 1px at 62% 82%, #dfe6ff 50%, transparent 51%),
+              radial-gradient(1.5px 1.5px at 78% 30%, #fff 50%, transparent 51%),
+              radial-gradient(1px 1px at 92% 64%, #fff 50%, transparent 51%),
+              radial-gradient(1px 1px at 52% 48%, #fff5cc 50%, transparent 51%),
+              #060919; }
+  .reveal .rk { display: inline-block; padding: 3px 14px; font: 600 14px/1.4 var(--head);
+                color: var(--ink); background: var(--yellow); border: var(--line); border-radius: 999px; }
+  .reveal .rfloat { margin: 16px 0 8px; transform: rotate(-14deg); }
+  @media (prefers-reduced-motion: no-preference) {
+    .reveal .rfloat { animation: eject 3s ease-in-out infinite; }
+    @keyframes eject { 0%, 100% { transform: translate(-6px, 0) rotate(-14deg); }
+                       50% { transform: translate(6px, -8px) rotate(10deg); } }
+  }
+  .reveal .rn { margin: 8px 0 4px; font: 700 26px/1.2 var(--head); color: #fff; text-shadow: var(--o2);
+                overflow-wrap: anywhere; }
+  .reveal .rr { font: 600 18px/1.3 var(--head); color: var(--muted); }
+  .reveal .rr strong { display: block; margin-top: 4px; font: 700 44px/1.05 var(--head);
+                       letter-spacing: .04em; text-transform: uppercase; color: #fff; text-shadow: var(--o3); }
+  .reveal.mafia .rr strong { color: var(--red); }
+  .reveal.civ .rr strong { color: var(--green); }
+  .reveal.none { padding: 32px 16px; }
+  .reveal.none .rn { margin-top: 16px; font-size: 28px; color: #d7ddf3; }
+
+  /* --------------------------------------------------------- game over */
+  #phaseCard .card:has(.winner) { padding: 0; overflow: hidden; }
+  .winner { padding: 32px 20px; text-align: center; }
+  .winner.good { background: #16784a; }
+  .winner.bad { background: #b3182f; }
+  .winner .wk { display: inline-block; margin-bottom: 12px; padding: 3px 14px; font: 600 14px/1.4 var(--head);
+                letter-spacing: .08em; text-transform: uppercase; color: var(--ink);
+                background: var(--yellow); border: var(--line); border-radius: 999px; }
+  .winner h3 { margin: 0; font-size: clamp(36px, 11vw, 52px); color: #fff; text-shadow: var(--o3); }
+
+  /* ----------------------------------------------------------- footer */
+  .foot { margin-top: 12px; text-align: center; font-size: 14px; color: var(--muted); }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="crew" viewBox="0 0 64 64">
+    <path d="M31 9 L29 3" stroke="#0a0e22" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="28.5" cy="3" r="2.6" style="fill:var(--c)" stroke="#0a0e22" stroke-width="2"/>
+    <rect x="7" y="27" width="13" height="21" rx="5" style="fill:var(--c)" stroke="#0a0e22" stroke-width="3"/>
+    <rect x="7" y="27" width="13" height="21" rx="5" fill="#000" opacity=".22"/>
+    <path d="M18 31 C18 15 25 9 35 9 C47 9 54 16 54 31 L54 52 C54 57 52 59 48 59 L43 59 C40 59 39 57 39 54 L39 51 L33 51 L33 54 C33 57 32 59 29 59 L24 59 C20 59 18 57 18 52 Z" style="fill:var(--c)" stroke="#0a0e22" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M47 13 C51 17 52 23 52 31 L52 51 C52 55 51 57 48 57 L44 57 C42 57 41 56 41 53 L41 49 C46 48 49 43 49 36 Z" fill="#000" opacity=".18"/>
+    <rect x="31" y="18" width="26" height="15" rx="7.5" fill="#a8ecfb" stroke="#0a0e22" stroke-width="3"/>
+    <rect x="31" y="26" width="26" height="7" rx="3.5" fill="#5cc3dc" opacity=".6"/>
+    <rect x="41" y="21" width="11" height="4" rx="2" fill="#fff" opacity=".9"/>
+  </symbol>
+</svg>
+
+<div class="wrap">
+  <header class="masthead">
+    <h1>Among <span class="accent">PID</span></h1>
+    <div class="mrow">
+      <span class="live hide" id="live"><span class="dot"></span>Spectating</span>
+      <span class="week" id="week"></span>
+    </div>
+  </header>
+
+  <div class="card login" id="loginCard">
+    <div class="login-crew" aria-hidden="true">
+      <svg class="crew" style="--c:#a98bff" viewBox="0 0 64 64"><use href="#crew"/></svg>
+      <svg class="crew" style="--c:#38d9f5" viewBox="0 0 64 64"><use href="#crew"/></svg>
+      <svg class="crew" style="--c:#34d27b" viewBox="0 0 64 64"><use href="#crew"/></svg>
+    </div>
+    <h2 class="login-title">Sign in to watch</h2>
+    <p class="hint">Use the spectator email and password you were given.</p>
+    <div class="fields">
+      <div id="err"></div>
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="username">
+      <label for="pw">Password</label>
+      <input id="pw" type="password" autocomplete="current-password">
+      <button id="go">Start watching</button>
+    </div>
+  </div>
+
+  <div id="syncErr"></div>
+  <div class="phase-progress hide" id="phaseProgress" aria-label="Session progress"></div>
+  <div id="phaseCard"></div>
+  <div id="feedCard"></div>
+  <div id="masterAwardsCard"></div>
+
+  <div class="card hide" id="statsCard">
+    <div class="stats">
+      <div class="stat">
+        <svg viewBox="0 0 64 64" aria-hidden="true" style="--c:#34d27b"><use href="#crew"/></svg>
+        <div><div class="v" id="nAlive">0</div><div class="k">Alive</div></div>
+      </div>
+      <div class="stat">
+        <svg viewBox="0 0 36 36" aria-hidden="true">
+          <path d="M8 31 V16 a10 10 0 0 1 20 0 V31 l-3.3-3 -3.4 3 -3.3-3 -3.3 3 -3.4-3z" fill="#c9d3ff" stroke="#0a0e22" stroke-width="3" stroke-linejoin="round"/>
+          <circle cx="14.5" cy="17" r="2.2" fill="#0a0e22"/><circle cx="21.5" cy="17" r="2.2" fill="#0a0e22"/>
+        </svg>
+        <div><div class="v" id="nOut">0</div><div class="k">Out</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card hide" id="rosterCard">
+    <h2>The crew</h2>
+    <div class="people" id="roster"></div>
+  </div>
+
+  <div class="hide" id="outWrap">
+    <button class="ghost" id="out">Stop watching</button>
+    <div class="foot" id="foot"></div>
+  </div>
+</div>
+
+<script type="module">
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+const URL = 'https://ashjitdpilxwcfhxamni.supabase.co';
+const KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFzaGppdGRwaWx4d2NmaHhhbW5pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwNDAxOTEsImV4cCI6MjEwNTYxNjE5MX0.wWTdrocCPlOWWN5CwTVi--OgWuVBEc99zWxWfVE_Gqk';
+
+/* Own storage key, so watching never signs anyone out of the console or
+   the player page in the same browser. */
+const sb = createClient(URL, KEY, {
+  auth: { storageKey: 'ampid-spectator', persistSession: true }
+});
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g,
+  (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+
+/* Same avatar hash as player.html, so everyone is the same colour on both screens. */
+const CREW = ['#ff5a5a','#4d8dff','#34d27b','#ff7ac8','#ff9a3c','#ffd23f','#a98bff','#38d9f5','#b6f04a','#f2f4ff','#c7844a','#9aa4bc'];
+const crew = (id, cls = '') => { let h = 5381; for (const ch of String(id ?? '')) h = ((h * 33) ^ ch.charCodeAt(0)) >>> 0;
+  return `<svg class="crew ${cls}" style="--c:${CREW[h % CREW.length]}" viewBox="0 0 64 64" aria-hidden="true"><use href="#crew"/></svg>`; };
+
+/* --------------------------------------------------------------- text -- */
+const ROLE_LABEL = { MAFIA: 'Mafia', CIVILIAN: 'Civilian' };
+const PHASE_ORDER = ['ATTENDANCE','HIDDEN_ACTIONS','MINIGAME','MASTER','REWARDS','RESOLUTION','VOTING','RESULTS'];
+const PHASE_SHORT = {ATTENDANCE:'Start',HIDDEN_ACTIONS:'Actions',MINIGAME:'Game',MASTER:'Master',REWARDS:'Rewards',RESOLUTION:'Result',VOTING:'Vote',RESULTS:'End'};
+const PHASE_STYLE = {HIDDEN_ACTIONS:'hidden',MINIGAME:'minigame',REWARDS:'rewards',RESOLUTION:'results',MASTER:'hidden',VOTING:'voting',RESULTS:'results',FINISHED:'finished',CLOSED:'closed',ATTENDANCE:'discussion'};
+
+/* Written for an audience. Deliberately says nothing about who did what. */
+const IDLE = {
+  CLOSED:         ['Between sessions', 'Nothing is running right now. Check back when the next week opens.'],
+  ATTENDANCE:     ['Session starting', 'The crew is checking in for the week.'],
+  HIDDEN_ACTIONS: ['Lights out', 'The Mafia are choosing their target in secret. Everyone else waits in the dark.'],
+  MINIGAME:       ['Minigame', 'The crew is battling it out for Reward Tokens.'],
+  MASTER:         ['Master awards', 'The Master is choosing this week’s Most engaged and Best team player.'],
+  REWARDS:        ['Tokens & shopping', 'Players are quietly spending their tokens. Every purchase stays secret.'],
+  RESOLUTION:     ['The night is over', 'Find out what happened while the lights were out.'],
+  FINISHED:       ['Game over', 'That is the end of this game.']
+};
+
+/* -------------------------------------------------------------- state -- */
+let phase = null;
+let roster = [];
+let ballots = [];
+let voteTimer = null;
+let masterAwards = [];
+let timer = null;
+let syncError = '';
+
+/* Live vote feed: diffed client-side between refreshes. */
+let feed = [];
+let prevVotes = null;       // Map voter -> target; null until first load
+let feedRound = null;
+
+const round = () => phase?.current_round ?? 0;
+const nameOf = (id) => roster.find((r) => r.id === id)?.display_name ?? 'someone';
+
+/* --------------------------------------------------------------- load -- */
+async function load() {
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) return;
+  $('loginCard').classList.add('hide');
+  $('live').classList.remove('hide');
+  $('statsCard').classList.remove('hide');
+  $('rosterCard').classList.remove('hide');
+  $('outWrap').classList.remove('hide');
+  await refresh();
+  schedule();
+}
+
+function schedule() {
+  clearTimeout(timer);
+  timer = setTimeout(async () => {
+    try { await refresh(); } catch (err) { console.error('[spectator] refresh failed', err); }
+    schedule();
+  }, phase?.phase === 'VOTING' ? 2500 : 6000);
+}
+
+/* Public reads only. See the note at the top of this file. */
+async function refresh() {
+  const [phaseRes, rosterRes] = await Promise.all([
+    sb.from('game_phase').select('*'),
+    sb.from('roster').select('id, display_name, life_status').order('display_name')
+  ]);
+  syncError = phaseRes.error?.message || rosterRes.error?.message || '';
+
+  if (!phaseRes.error) {
+    phase = (phaseRes.data && phaseRes.data[0])
+      ?? { phase: 'CLOSED', current_round: 0, public_text: '', winner: '', eliminated_id: '', eliminated_role: '', master_awards: [] };
+  }
+  phase ??= { phase: 'CLOSED', current_round: 0, public_text: '', winner: '', eliminated_id: '', eliminated_role: '', master_awards: [] };
+  masterAwards = Array.isArray(phase.master_awards) ? phase.master_awards : [];
+  if (!rosterRes.error) roster = rosterRes.data ?? [];
+
+  const r = round();
+  const [bRes, tRes] = await Promise.all([
+    sb.from('ballots').select('round, voter_id, target_id').eq('round', r),
+    sb.from('vote_timer').select('*').limit(1)
+  ]);
+  /* A failed read keeps the last board rather than blanking it. */
+  if (!bRes.error) ballots = bRes.data ?? [];
+  voteTimer = tRes.error ? null : ((tRes.data && tRes.data[0]) ?? null);
+
+  trackFeed();
+  paint();
+}
+
+/* Turns ballot changes into a readable feed. The first load of a week only
+   seeds the baseline, so opening the page mid-vote does not replay
+   everything as if it just happened. */
+function trackFeed() {
+  const r = round();
+  if (feedRound !== r) { feed = []; prevVotes = null; feedRound = r; }
+  const now = new Map(ballots.map((b) => [b.voter_id, b.target_id]));
+  if (prevVotes && phase?.phase === 'VOTING') {
+    const at = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    for (const [voter, target] of now) {
+      const before = prevVotes.get(voter);
+      if (!before) feed.unshift({ voter, html: `${esc(nameOf(voter))} voted for <b>${esc(nameOf(target))}</b>`, at });
+      else if (before !== target) feed.unshift({ voter,
+        html: `${esc(nameOf(voter))} switched from ${esc(nameOf(before))} to <b>${esc(nameOf(target))}</b>`, at });
+    }
+    for (const [voter] of prevVotes) {
+      if (!now.has(voter)) feed.unshift({ voter, html: `${esc(nameOf(voter))} took their vote back`, at });
+    }
+    feed = feed.slice(0, 12);
+  }
+  prevVotes = now;
+}
+
+/* -------------------------------------------------------------- paint -- */
+function paint() {
+  $('week').textContent = round() ? `Week ${round()}` : 'Not started';
+  $('syncErr').innerHTML = syncError
+    ? `<div class="err">Having trouble updating: ${esc(syncError)}. Showing the last thing we saw.</div>` : '';
+  paintPhase();
+  paintFeed();
+  paintMasterAwards();
+  paintStats();
+  paintRoster();
+  $('foot').textContent = 'Updates automatically. Last checked '
+    + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function paintProgress() {
+  const host = $('phaseProgress');
+  if (!phase || phase.phase === 'CLOSED' || phase.phase === 'FINISHED') {
+    host.classList.add('hide'); host.innerHTML = ''; return;
+  }
+  const current = PHASE_ORDER.indexOf(phase.phase);
+  host.classList.remove('hide');
+  host.innerHTML = PHASE_ORDER.map((p, i) =>
+    `<div class="step ${i < current ? 'done' : i === current ? 'active' : ''}"><span class="bar"></span><span class="txt">${PHASE_SHORT[p]}</span></div>`).join('');
+}
+
+function paintPhase() {
+  const host = $('phaseCard');
+  const p = phase.phase;
+  host.className = 'phase-' + (PHASE_STYLE[p] ?? 'closed');
+  paintProgress();
+
+  if (p === 'FINISHED') {
+    return void (host.innerHTML = card('quiet',
+      `<div class="winner ${phase.winner === 'GOOD' ? 'good' : 'bad'}"><div class="wk">Game over</div>
+        <h3>${phase.winner === 'GOOD' ? 'The town wins' : 'The Mafia win'}</h3></div>`));
+  }
+  if (p === 'VOTING')  return paintVote(host);
+  if (p === 'RESULTS') return paintVote(host, true);
+
+  const [title, text] = IDLE[p] ?? ['Standing by', 'Nothing to watch just yet.'];
+  host.innerHTML = card('quiet',
+    `<h3>${esc(title)}</h3><p class="hint">${esc(text)}</p>`
+    + (phase.public_text ? `<div class="announce"><span class="ak">Announcement</span><span class="at">${esc(phase.public_text)}</span></div>` : ''));
+}
+
+/* ------------------------------------------------------------- vote --- */
+const fmtClock = (sec) =>
+  `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
+
+function voteLeft() {
+  const t = voteTimer;
+  if (!t || t.round !== round()) return null;
+  if (t.ends_at) return Math.max(0, Math.ceil((Date.parse(t.ends_at) - Date.now()) / 1000));
+  return Math.max(0, t.remaining_seconds ?? 0);
+}
+const clockRunning = () => !!(voteTimer && voteTimer.round === round() && voteTimer.ends_at);
+
+function paintVote(host, final = false) {
+  const alivePool = roster.filter((r) => r.life_status === 'ALIVE');
+  /* Keep the voted-out player on the final board after the elimination is
+     applied, so their tile and role tag do not vanish. */
+  const outId = final ? (phase.eliminated_id || null) : null;
+  const pool = outId && !alivePool.some((p) => p.id === outId)
+    ? [...alivePool, roster.find((r) => r.id === outId) ?? { id: outId, display_name: nameOf(outId) }]
+    : alivePool;
+
+  const left = voteLeft();
+  const timeUp = left === 0;
+
+  const byTarget = {};
+  for (const b of ballots) (byTarget[b.target_id] ||= []).push(b.voter_id);
+  const voted = new Set(ballots.map((b) => b.voter_id));
+  const top = Math.max(0, ...Object.values(byTarget).map((v) => v.length));
+  const leaders = top ? pool.filter((p) => (byTarget[p.id] || []).length === top) : [];
+  const waiting = alivePool.filter((p) => !voted.has(p.id));
+
+  const clockCls = timeUp ? ' done' : clockRunning() ? '' : ' paused';
+  const clock = !final && left !== null
+    ? `<div class="vclock${clockCls}" id="vClock">${fmtClock(left)}</div>` : '';
+
+  const hint = final
+    ? 'Extra Vote and Vote Manipulation are secret and can change the final count. Master double votes are marked ×2.'
+    : timeUp ? "Time's up. Hunter is counting the votes."
+    : 'Live. Watch the votes land and switch as the crew argues it out.';
+
+  const leadBox = !final && top
+    ? (leaders.length === 1
+        ? `<div class="lead-box">${crew(leaders[0].id)}<div><div class="lk">Leading</div>
+             <div class="lv">${esc(leaders[0].display_name)} &middot; ${top} vote${top === 1 ? '' : 's'}</div></div></div>`
+        : `<div class="lead-box tie"><div><div class="lk">Tied at ${top}</div>
+             <div class="lv">${leaders.map((p) => esc(p.display_name)).join(', ')}</div></div></div>`)
+    : '';
+
+  const tiles = pool.map((p) => {
+    const vs = byTarget[p.id] || [];
+    const isOut = outId === p.id;
+    const cls = ['vtile',
+      vs.length && vs.length === top && !isOut ? 'lead' : '',
+      isOut ? 'gone' : ''].filter(Boolean).join(' ');
+    return `<div class="${cls}">
+      <div class="vhead">
+        ${crew(p.id, isOut ? 'ghost' : '')}
+        <span class="vmeta"><span class="vn">${esc(p.display_name)}</span>
+        ${isOut ? '<span class="vtick outtag">Voted out</span>'
+          : voted.has(p.id) ? '<span class="vtick">Voted</span>' : ''}</span>
+        <span class="vc">${vs.length || ''}</span>
+      </div>
+      <div class="vchips">${vs.length
+        ? vs.map((v) => {
+            const x2 = masterAwards.some((a) => a.player_id === v && a.prize === 'DOUBLE_VOTE');
+            return `<span class="vchip">${crew(v, 'mini')}${esc(nameOf(v))}${x2 ? ' <b>×2</b>' : ''}</span>`;
+          }).join('')
+        : '<span class="vnone">No votes</span>'}</div>
+    </div>`;
+  }).join('');
+
+  host.innerHTML = card('act', `
+    <div class="vtop">
+      <h3>${final ? 'Final votes' : 'Discuss &amp; vote'}</h3>
+      ${clock}
+    </div>
+    ${final ? revealHtml() : ''}
+    ${!final && phase.public_text ? `<div class="announce sm"><span class="ak">Last night</span><span class="at">${esc(phase.public_text)}</span></div>` : ''}
+    <p class="hint">${hint}</p>
+    ${!final && left !== null && !clockRunning() && !timeUp ? '<div class="note">The clock is paused.</div>' : ''}
+    ${leadBox}
+    <div class="vboard">${tiles}</div>
+    <p class="waiting">${voted.size} of ${alivePool.length} have voted.${
+      !final && waiting.length && waiting.length <= 8
+        ? ` Still to vote: <strong>${waiting.map((p) => esc(p.display_name)).join(', ')}</strong>.` : ''}</p>`);
+}
+
+function revealHtml() {
+  if (!phase.eliminated_id) {
+    return `<div class="reveal none"><div class="rk">Week ${round()} &middot; the vote</div>
+      <div class="rn">No one was voted out</div></div>`;
+  }
+  const role = phase.eliminated_role || '';
+  const label = ROLE_LABEL[role] ?? '';
+  const cls = role === 'MAFIA' ? 'mafia' : role ? 'civ' : '';
+  return `<div class="reveal ${cls}">
+    <div class="rk">Week ${round()} &middot; voted out</div>
+    <div class="rfloat">${crew(phase.eliminated_id, 'big')}</div>
+    <div class="rn">${esc(nameOf(phase.eliminated_id))} was voted out</div>
+    ${label ? `<div class="rr">They were <strong>${esc(label)}</strong></div>` : ''}
+  </div>`;
+}
+
+/* Clock ticks locally every half second; the board refreshes every 2.5s. */
+setInterval(() => {
+  if (!phase || phase.phase !== 'VOTING') return;
+  const left = voteLeft();
+  const c = $('vClock');
+  if (!c || left === null) return;
+  c.textContent = fmtClock(left);
+  c.classList.toggle('done', left === 0);
+}, 500);
+
+/* ------------------------------------------------------ side panels --- */
+function paintFeed() {
+  const host = $('feedCard');
+  const p = phase?.phase;
+  if ((p !== 'VOTING' && p !== 'RESULTS') || !feed.length) return void (host.innerHTML = '');
+  host.innerHTML = card('quiet', `
+    <h2>Vote feed</h2>
+    <div class="vfeed">${feed.map((f) => `<div class="vf">${crew(f.voter)}
+      <span class="ft">${f.html}</span><span class="fw">${esc(f.at)}</span></div>`).join('')}</div>`);
+}
+
+function paintMasterAwards() {
+  const host = $('masterAwardsCard');
+  if (!phase || phase.phase === 'CLOSED' || !masterAwards.length) return void (host.innerHTML = '');
+  const rows = masterAwards.filter((a) => a && a.player_id);
+  if (!rows.length) return void (host.innerHTML = '');
+  host.innerHTML = card('quiet', `<h2>Master awards</h2>${rows.map((a) => `
+    <div class="item"><div style="display:flex;align-items:center;gap:10px">${crew(a.player_id)}
+      <div><div class="t">${esc(a.title)}: ${esc(a.display_name)}</div>
+      <div class="d">${a.prize === 'TOKEN' ? '+1 token' : 'Double vote ×2'}</div></div></div></div>`).join('')}`);
+}
+
+function paintStats() {
+  const alive = roster.filter((p) => p.life_status === 'ALIVE').length;
+  $('nAlive').textContent = alive;
+  $('nOut').textContent = roster.length - alive;
+}
+
+function paintRoster() {
+  $('roster').innerHTML = roster.map((p) => {
+    const out = p.life_status !== 'ALIVE';
+    return `<div class="who${out ? ' out' : ''}">
+      ${crew(p.id)}
+      <span class="n">${esc(p.display_name)}</span>
+      ${out ? '<span class="status">Out</span>' : ''}
+    </div>`;
+  }).join('') || '<p class="hint" style="margin:0">No crew yet.</p>';
+}
+
+/* ------------------------------------------------------------ utils --- */
+const card = (cls, inner) => `<div class="card ${cls}">${inner}</div>`;
+function fail(msg) { $('err').innerHTML = `<div class="err">${esc(msg)}</div>`; }
+
+/* ------------------------------------------------------------- boot --- */
+$('go').onclick = async () => {
+  $('err').innerHTML = '';
+  const { error } = await sb.auth.signInWithPassword({
+    email: $('email').value.trim().toLowerCase(),
+    password: $('pw').value
+  });
+  if (error) return fail(error.message);
+  load();
+};
+$('pw').onkeydown = (e) => { if (e.key === 'Enter') $('go').click(); };
+$('out').onclick = async () => {
+  clearTimeout(timer);
+  await sb.auth.signOut();
+  location.reload();
+};
+
+const { data: { session } } = await sb.auth.getSession();
+if (session) load();
+</script>
+</body>
+</html>
