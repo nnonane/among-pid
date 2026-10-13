@@ -1,18 +1,15 @@
-/* mafia v1.0 | content.js | 30 Sep 2026 */
+/* mafia v1.2 | content.js | 14 Oct 2026 */
 /*
   YOUR FILE. Edit freely — nothing here affects game logic.
   Minigames, labels and display text only.
 */
-
 export const GAME_TITLE = 'Among PID';
 export const GAME_SUBTITLE = 'Weekly Mafia';
-
 // ---------------------------------------------------------------------------
 // Minigame library
 //   format: 'INDIVIDUAL' | 'TEAM'
 //   backup: true = quick-launch, minimal setup, good when running short
 // ---------------------------------------------------------------------------
-
 export const MINIGAMES = [
   {
     id: 'mg_werdle',
@@ -75,11 +72,9 @@ export const MINIGAMES = [
       'A team that stalls for five seconds loses the round. Best of five.'
   }
 ];
-
 // ---------------------------------------------------------------------------
 // Display labels
 // ---------------------------------------------------------------------------
-
 export const PHASE_LABEL = {
   CLOSED: 'Session closed',
   ATTENDANCE: 'Attendance',
@@ -92,7 +87,6 @@ export const PHASE_LABEL = {
   RESULTS: 'Results',
   FINISHED: 'Game over'
 };
-
 export const PHASE_HINT = {
   CLOSED: 'Nothing advances while the session is closed. Open a session to begin the week.',
   ATTENDANCE: 'Mark who is here. Absent players go Dormant and cannot act, vote or be targeted.',
@@ -105,30 +99,27 @@ export const PHASE_HINT = {
   RESULTS: 'Reveal the outcome, then close the session.',
   FINISHED: 'The game has ended.'
 };
-
 export const ROLE_LABEL = {
   MAFIA: 'Mafia',
   CIVILIAN: 'Civilian'
 };
-
 export const ITEM_LABEL = {
   TEMP_IMMUNITY: 'Temporary Immunity',
   EXTRA_VOTE: 'Extra Vote',
   DISCOUNTED_RESURRECTION: 'Discounted Resurrection',
-  VOTE_MANIPULATION: 'Vote Manipulation',
-  RECRUIT_NEW_MAFIA: 'Recruit New Mafia'
+  RECRUIT_NEW_MAFIA: 'Recruit New Mafia',
+  SABOTAGE: 'Sabotage',
+  VOTE_MANIPULATION: 'Vote Manipulation (retired)'
 };
-
 export const ITEM_HINT = {
-  TEMP_IMMUNITY: 'Blocks the kill and the public vote next round.',
+  TEMP_IMMUNITY: 'Blocks the kill, the public vote and Sabotage next round.',
   EXTRA_VOTE: 'Adds one weight to one ballot.',
   DISCOUNTED_RESURRECTION: 'Kept through death. Lowers one resurrection to 2 points.',
-  VOTE_MANIPULATION: 'One anonymous vote adjustment.',
-  RECRUIT_NEW_MAFIA: 'Convert a living non-Mafia. Blocked above three active Mafia.'
+  RECRUIT_NEW_MAFIA: 'Convert a living non-Mafia. Blocked above three active Mafia.',
+  SABOTAGE: 'Pick a player. They cannot vote at next week’s Discuss & vote. One at a time. Temporary Immunity blocks it.',
+  VOTE_MANIPULATION: 'No longer in the game.'
 };
-
 export const SETTING_LABEL = {
-  voteManipulationDirection: 'Vote Manipulation direction',
   spiritPointsAttendance: 'Spirit Points for attendance',
   spiritPointsMinigameWin: 'Spirit Points for a minigame win',
   resurrectionCost: 'Resurrection cost',

@@ -1,4 +1,4 @@
-/* mafia v1.1 | ui.js | 14 Oct 2026 */
+/* mafia v1.2 | ui.js | 14 Oct 2026 */
 /*
   Rendering and admin controls. Talks to store.js and engine.js only.
   Contains NO game rules — anything that decides an outcome lives in engine.js.
@@ -41,9 +41,13 @@
        confirms; Cancel keeps playing and is logged.
     3. A "Resume this game" button on the Game over screen puts a game that
        ended by mistake back where it stopped, with nothing else changed.
+  v1.2 Vote Manipulation retired, SABOTAGE added for the Mafia. The buyer
+  names a target; that player cannot vote at the next Discuss & vote. The
+  target is published to every screen via game_phase.sabotaged_id
+  (sabotage.sql). The Sabotage is used up when the vote is tallied.
 */
 import * as E from './engine.js';
-import { Store, LocalAdapter, newPlayer, newInventoryItem, retireRole } from './store.js';
+import { Store, LocalAdapter, newPlayer, newInventoryItem, retireRole, retireItems } from './store.js';
 import { chooseAdapter, mountStorageButton } from './cloud.js';
 import { Live, SOURCE, mergeActions, mergeBallots } from './live.js';
 import {
@@ -279,6 +283,11 @@ function targetSelect(name, current, { exclude = [], pool = present(), blank = '
     .join('');
   return `<select data-field="${name}"><option value="">${blank}</option>${opts}</select>`;
 }
+/** Writes the public Sabotage marker into a draft. Only an ACTIVE one is shown. */
+function publishSabotage(d) {
+  const s = E.sabotageFor(d);
+  d.currentSabotage = s && s.status === 'ACTIVE' ? { targetId: s.targetId } : null;
+}
 /* ============================================================ CHROME ==== */
 function renderChrome() {
   const g = S().game;
@@ -359,7 +368,7 @@ async function syncRosterFromDatabase() {
   let fresh;
   try { fresh = await adapter.loadPlayers(); } catch { return; }
   const known = new Set(S().players.map((p) => p.id));
-  const missing = fresh.filter((p) => !known.has(p.id)).map(retireRole);
+  const missing = fresh.filter((p) => !known.has(p.id)).map((p) => retireItems(retireRole(p)));
   if (!missing.length) return;
   await store.commit((d) => { d.players = [...d.players, ...missing]; },
     { eventType: 'ROSTER_SYNCED',
@@ -980,13 +989,17 @@ function purchaseQueue(main) {
   const tb = table.querySelector('tbody');
   for (const req of pendingPurchases) {
     const p = byId(req.playerId);
-    const check = p
+    let check = p
       ? E.canPurchase(p, req.rewardType, S().players, settings())
       : { ok: false, reason: 'No longer on the roster' };
+    if (check.ok && req.rewardType === E.ITEM.SABOTAGE && req.targetId) {
+      check = E.canSabotage(req.playerId, req.targetId, S().players);
+    }
     const tr = el('tr');
     tr.innerHTML = `
       <td>${esc(p ? p.displayName : 'Unknown')}</td>
       <td>${esc(ITEM_LABEL[req.rewardType] ?? req.rewardType)}
+        ${req.targetId ? `<br><span class="faint">Target: ${esc(nameOf(req.targetId))}</span>` : ''}
         ${check.ok ? '' : `<br><span class="faint">${esc(check.reason)}</span>`}</td>
       <td class="num tokens">${p ? p.rewardTokens : 0}</td>
       <td>
@@ -994,7 +1007,8 @@ function purchaseQueue(main) {
         <button class="btn sm ghost" data-no>Reject</button>
       </td>`;
     tr.querySelector('[data-yes]').onclick = async () => {
-      await purchase(req.playerId, req.rewardType);
+      const done = await purchase(req.playerId, req.rewardType, req.targetId);
+      if (done === false) return;
       await live.decidePurchase(req.id, 'ACCEPTED');
       pendingPurchases = pendingPurchases.filter((x) => x.id !== req.id);
       render();
@@ -1014,12 +1028,52 @@ function purchaseQueue(main) {
   card.appendChild(table);
   main.appendChild(card);
 }
-async function purchase(playerId, itemType) {
-  const p = byId(playerId);
-  if (!p || !itemType) return toast('Select a player and a reward.', true);
-  const check = E.canPurchase(p, itemType, S().players, settings());
-  if (!check.ok) return toast(check.reason, true);
+/** Charges one token and stores a Sabotage aimed at targetId. */
+async function buySabotage(p, targetId) {
+  const v = E.canSabotage(p.id, targetId, S().players);
+  if (!v.ok) { toast(v.reason, true); return false; }
   const round = S().game.currentRound;
+  await commit((d) => {
+    d.players = d.players.map((x) => x.id !== p.id ? x : {
+      ...x,
+      rewardTokens: x.rewardTokens - 1,
+      inventory: [...(x.inventory || []), newInventoryItem(E.ITEM.SABOTAGE, round, targetId)]
+    });
+  }, { eventType: 'PURCHASE', actorId: p.id,
+       summary: `${p.displayName} bought Sabotage on ${nameOf(targetId)}` });
+  toast(`Sabotage set on ${nameOf(targetId)}. They cannot vote at next week's Discuss & vote.`);
+  return true;
+}
+/**
+ * Returns false if nothing was bought, so a player request is not marked
+ * accepted. Recruit (and Sabotage with no target) open a picker instead.
+ */
+async function purchase(playerId, itemType, targetId = null) {
+  const p = byId(playerId);
+  if (!p || !itemType) { toast('Select a player and a reward.', true); return false; }
+  const check = E.canPurchase(p, itemType, S().players, settings());
+  if (!check.ok) { toast(check.reason, true); return false; }
+  const round = S().game.currentRound;
+  if (itemType === E.ITEM.SABOTAGE) {
+    if (targetId) return buySabotage(p, targetId);
+    return new Promise((resolve) => openModal(`
+      <h2>Sabotage</h2>
+      <p class="hint">${esc(p.displayName)} picks a living player. That player cannot vote at
+        next week’s Discuss &amp; vote. Temporary Immunity blocks it.</p>
+      <label class="field"><span>Target</span>
+        ${targetSelect('t', null, { pool: living().filter((x) => x.id !== p.id), blank: '— choose —' })}
+      </label>
+      <div class="btn-row"><button class="btn primary" data-go>Sabotage</button>
+      <button class="btn ghost" data-cancel>Cancel</button></div>`, (root, close) => {
+      root.querySelector('[data-cancel]').onclick = () => { close(); resolve(false); };
+      root.querySelector('[data-go]').onclick = async () => {
+        const t = root.querySelector('select').value;
+        if (!t) return toast('Pick a target.', true);
+        close();
+        resolve(await buySabotage(p, t));
+      };
+    }));
+  }
   if (itemType === E.ITEM.RECRUIT_NEW_MAFIA) {
     return openModal(`
       <h2>Recruit new Mafia</h2>
@@ -1059,6 +1113,7 @@ async function purchase(playerId, itemType) {
   }, { eventType: 'PURCHASE', actorId: playerId,
        summary: `${p.displayName} purchased ${ITEM_LABEL[itemType]}` });
   toast(`${ITEM_LABEL[itemType]} purchased. Usable from week ${round + 1}.`);
+  return true;
 }
 /* ------------------------------------------------------ RESOLUTION ----- */
 function viewResolution(main) {
@@ -1280,23 +1335,26 @@ const ballotWeight = (voterId) => {
  * The Among Us style board: one tile per player who can be voted for, with
  * the names of everyone voting for them stacked underneath. Players see the
  * same board on their own screens, minus the weight markers.
+ * A sabotaged player can still be voted FOR; their own ballot never shows.
  */
-function voteBoard(ballots, candidates, { title = 'Vote board', final = false, out = null } = {}) {
+function voteBoard(ballots, candidates, { title = 'Vote board', final = false, out = null, silenced = null } = {}) {
   const card = el('div', 'card');
+  const counted = ballots.filter((b) => b.voterId !== silenced);
   const byTarget = new Map();
-  for (const b of ballots) {
+  for (const b of counted) {
     if (!b.targetId) continue;
     if (!byTarget.has(b.targetId)) byTarget.set(b.targetId, []);
     byTarget.get(b.targetId).push(b.voterId);
   }
-  const voted = new Set(ballots.map((b) => b.voterId));
+  const voted = new Set(counted.map((b) => b.voterId));
+  const canVoteCount = candidates.filter((p) => p.id !== silenced).length;
   const top = Math.max(0, ...[...byTarget.values()].map((v) => v.length));
   card.innerHTML = `
     <h2>${esc(title)}
-      <span class="badge ${voted.size >= candidates.length ? 'alive' : 'dormant'}">${voted.size} of ${candidates.length} voted</span></h2>
+      <span class="badge ${voted.size >= canVoteCount ? 'alive' : 'dormant'}">${voted.size} of ${canVoteCount} voted</span></h2>
     <p class="hint">${final
-      ? 'Final ballots. Extra Vote and Vote Manipulation can still make the result differ from a simple count.'
-      : 'Master double votes are public and marked ×2. Extra Vote and Vote Manipulation stay hidden.'}</p>
+      ? 'Final ballots. Extra Vote can still make the result differ from a simple count.'
+      : 'Master double votes are public and marked ×2. Extra Vote stays hidden.'}</p>
     <div class="vote-board">${candidates.map((p) => {
       const vs = byTarget.get(p.id) || [];
       const lead = vs.length && vs.length === top;
@@ -1305,6 +1363,7 @@ function voteBoard(ballots, candidates, { title = 'Vote board', final = false, o
           <span class="vote-name">${esc(p.displayName)}</span>
           ${out && out.id === p.id
             ? `<span class="badge ${out.role === E.ROLE.MAFIA ? 'mafia' : 'good'}">Out · ${esc(roleLabel(out.role))}</span>` : ''}
+          ${p.id === silenced ? '<span class="badge mafia">Sabotaged</span>' : ''}
           ${voted.has(p.id) ? '<span class="voted-tag">Voted</span>' : ''}
           <span class="vote-count">${vs.length || ''}</span>
         </div>
@@ -1318,9 +1377,29 @@ function voteBoard(ballots, candidates, { title = 'Vote board', final = false, o
     }).join('')}</div>`;
   return card;
 }
+/** Admin-only note about this week's Sabotage. Says who bought it - keep it private. */
+function sabotageCard() {
+  const s = E.sabotageFor(S());
+  if (!s) return null;
+  const t = esc(nameOf(s.targetId));
+  const o = esc(nameOf(s.ownerId));
+  const text = {
+    ACTIVE: `<strong>${t}</strong> has been sabotaged and cannot vote this week. Every screen shows this.
+      Bought by ${o} — keep that secret.`,
+    BLOCKED: `${o}'s Sabotage on <strong>${t}</strong> is blocked by Temporary Immunity, so ${t} can vote.
+      Nothing is shown to players. It is used up when you tally.`,
+    WAITING: `${o}'s Sabotage is aimed at <strong>${t}</strong>, who is absent this week. It waits for the next vote.`,
+    WASTED: `${o}'s Sabotage was aimed at <strong>${t}</strong>, who is out of the game. It has no effect and is used up when you tally.`
+  }[s.status];
+  return el('div', 'card private', `<h2>Sabotage</h2>
+    <div class="${s.status === 'ACTIVE' ? 'warnbox' : 'okbox'}">${text}</div>`);
+}
 function viewVoting(main) {
   const ballots = S().currentBallots || [];
+  const silenced = E.silencedId(S());
   const voters = present();
+  const canVote = voters.filter((p) => p.id !== silenced);
+  const counted = ballots.filter((b) => b.voterId !== silenced);
   const t = S().voteTimer?.round === S().game.currentRound ? S().voteTimer : null;
   const running = !!t?.endsAt;
   const left = timerLeft();
@@ -1362,9 +1441,11 @@ function viewVoting(main) {
       }
     }, 500);
   }
-  // --- who is still to vote, then the board -------------------------------
-  main.appendChild(liveBanner(voters, new Set(ballots.map((b) => b.voterId)), 'vote'));
-  main.appendChild(voteBoard(ballots, voters));
+  // --- sabotage, who is still to vote, then the board ----------------------
+  const sab = sabotageCard();
+  if (sab) main.appendChild(sab);
+  main.appendChild(liveBanner(canVote, new Set(counted.map((b) => b.voterId)), 'vote'));
+  main.appendChild(voteBoard(ballots, voters, { silenced }));
   // --- admin entry / correction -------------------------------------------
   const card = el('div', 'card private');
   card.innerHTML = `
@@ -1376,6 +1457,13 @@ function viewVoting(main) {
   main.appendChild(card);
   const grid = card.querySelector('#vGrid');
   for (const v of voters) {
+    if (v.id === silenced) {
+      grid.appendChild(el('div', 'action-row', `
+        <div class="who">${esc(v.displayName)}<small>sabotaged</small></div>
+        <span class="faint">Cannot vote this week.</span>
+        <span class="badge mafia">Sabotaged</span>`));
+      continue;
+    }
     const cur = ballots.find((b) => b.voterId === v.id);
     const extra = isStaged(v, E.ITEM.EXTRA_VOTE);
     const weight = ballotWeight(v.id);
@@ -1390,50 +1478,42 @@ function viewVoting(main) {
       grid.appendChild(stageToggle(v, E.ITEM.EXTRA_VOTE));
     }
   }
-  // --- vote manipulation (unchanged) --------------------------------------
-  const mafiaWithVM = present().filter(
-    (p) => p.role === E.ROLE.MAFIA && (ownsUsable(p, E.ITEM.VOTE_MANIPULATION) || isStaged(p, E.ITEM.VOTE_MANIPULATION)));
-  if (mafiaWithVM.length) {
-    const vm = S().currentManipulation;
-    const mcard = el('div', 'card private');
-    mcard.innerHTML = `
-      <h2>Vote Manipulation</h2>
-      <p class="hint">One anonymous adjustment. Never shown on the board — only in the final count.</p>
-      <label class="field"><span>Target</span>${targetSelect('t', vm?.targetId)}</label>
-      <label class="field"><span>Adjustment</span>
-        <select data-field="d">
-          <option value="1"${vm?.delta === 1 ? ' selected' : ''}>+1 vote</option>
-          <option value="-1"${vm?.delta === -1 ? ' selected' : ''}>&minus;1 vote</option>
-        </select></label>`;
-    main.appendChild(mcard);
-    const [t2, d] = mcard.querySelectorAll('select');
-    const save = () => commitQuiet((st) => {
-      st.currentManipulation = t2.value ? { targetId: t2.value, delta: Number(d.value) } : null;
-    });
-    t2.onchange = save; d.onchange = save;
-  }
   // --- tally ---------------------------------------------------------------
   const go = el('div', 'card');
   go.innerHTML = `<div class="btn-row" style="margin:0">
     <button class="btn primary" id="tally">Tally the vote</button></div>
-    <p class="faint" style="margin-top:10px">${ballots.length} of ${voters.length} votes in.
-      Tallying ends the phase and applies vote weights and manipulation.</p>`;
+    <p class="faint" style="margin-top:10px">${counted.length} of ${canVote.length} votes in.
+      Tallying ends the phase and applies vote weights.</p>`;
   main.appendChild(go);
   go.querySelector('#tally').onclick = async () => {
     /* One last sync before the tally. A vote cast between the last poll and
        this click would otherwise be left out of a count that cannot re-run. */
     if (live) await pollNow({ silent: false });
-    const finalBallots = S().currentBallots || [];
+    const sil = E.silencedId(S());
+    const finalBallots = (S().currentBallots || []).filter((b) => b.voterId !== sil);
     if (!finalBallots.length) return toast('No votes in yet.', true);
-    const missing = voters.length - finalBallots.length;
+    const eligible = present().filter((p) => p.id !== sil).length;
+    const missing = eligible - finalBallots.length;
     if (missing > 0 && !(await confirmAction(`Tally with ${missing} vote(s) missing?`,
       'Anyone who has not voted is counted as abstaining. You can rewind afterwards, but the result is recorded now.'))) return;
-    const res = E.resolveVote(S(), finalBallots, S().currentMaster || {}, S().currentManipulation);
+    const res = E.resolveVote(S(), S().currentBallots || [], S().currentMaster || {});
+    /* Use up the Sabotage, unless its target was absent - then it waits. */
+    const s = E.sabotageFor(S());
+    const consume = s && s.status !== 'WAITING';
     await commit((d) => {
       d.currentVoteResult = res;
       d.game.status = E.PHASE.RESULTS;
       if (d.voteTimer) d.voteTimer = { ...d.voteTimer, endsAt: null, remaining: 0 };
-    });
+      if (consume) {
+        d.players = d.players.map((p) => p.id !== s.ownerId ? p : {
+          ...p,
+          inventory: (p.inventory || []).map((it) => it.id === s.itemId && it.status === 'OWNED'
+            ? { ...it, status: 'USED', usedRound: d.game.currentRound } : it)
+        });
+      }
+    }, consume ? { eventType: 'SABOTAGE_USED',
+      summary: `Sabotage on ${nameOf(s.targetId)} ${s.status === 'ACTIVE' ? 'took effect'
+        : s.status === 'BLOCKED' ? 'was blocked by immunity' : 'had no effect'}` } : undefined);
     if (live) live.pushVoteTimer(S().game.currentRound, { endsAt: null, remaining: 0 });
   };
 }
@@ -1476,7 +1556,8 @@ function viewResults(main) {
       : 'No elimination'}</div>
     <div class="detail">${res.eliminated
       ? `They were <strong>${esc(roleLabel(res.revealedRole))}</strong> — every player's screen shows this now.`
-      : res.tie ? 'The vote was tied.' : 'No eligible target.'}</div>`);
+      : res.tie ? 'The vote was tied.' : 'No eligible target.'}</div>
+    ${res.sabotaged ? `<div class="detail">${esc(nameOf(res.sabotaged))} was sabotaged and could not vote.</div>` : ''}`);
   card.appendChild(rev);
   const rows = Object.entries(res.totals).sort((a, b) => b[1] - a[1]);
   if (rows.length) {
@@ -1494,7 +1575,7 @@ function viewResults(main) {
   const boardPlayers = outP && !present().some((p) => p.id === outP.id)
     ? [...present(), outP] : present();
   main.appendChild(voteBoard(S().currentBallots || [], boardPlayers,
-    { title: 'Final votes', final: true,
+    { title: 'Final votes', final: true, silenced: res.sabotaged || null,
       out: outP ? { id: outP.id, role: res.revealedRole } : null }));
   if (res.eliminated && byId(res.eliminated)?.lifeStatus === E.LIFE.ALIVE) {
     const apply = el('div', 'card accent');
@@ -1554,8 +1635,10 @@ function viewFinished(main) {
     const to = resume.querySelector('#resPhase').value;
     if (!(await confirmAction(`Resume week ${g.currentRound} in ${PHASE_LABEL[to]}?`,
       'The Game over screen disappears for every player. Roles and balances are kept.'))) return;
-    await commit((d) => { d.game = { ...d.game, status: to, winner: null, finishedFrom: null }; },
-      { eventType: 'GAME_RESUMED', summary: `Game resumed in ${PHASE_LABEL[to]}`, trackDiff: true });
+    await commit((d) => {
+      d.game = { ...d.game, status: to, winner: null, finishedFrom: null };
+      if (to === E.PHASE.VOTING) publishSabotage(d);
+    }, { eventType: 'GAME_RESUMED', summary: `Game resumed in ${PHASE_LABEL[to]}`, trackDiff: true });
     toast('Game resumed.');
   };
   const again = el('div', 'card danger');
@@ -1576,7 +1659,7 @@ async function advancePhase() {
       d.currentActions = [];
       d.currentBallots = [];
       d.currentMaster = E.blankMasterAwards();
-      d.currentManipulation = null;
+      d.currentSabotage = null;
       d.currentWinners = [];
       d.currentMinigameId = null;
       d.currentVoteResult = null;
@@ -1617,6 +1700,8 @@ async function advancePhase() {
     let next = E.nextPhase(d.game.status);
     if (next === E.PHASE.MASTER && !settings().masterEnabled) next = E.PHASE.REWARDS;
     d.game.status = next;
+    /* Entering Discuss & vote publishes this week's Sabotage to every screen. */
+    if (next === E.PHASE.VOTING) publishSabotage(d);
   });
   /* Entering Discuss & vote starts the clock on every screen. Only the first
      time this week - rewinding and coming back leaves it as it was. */
@@ -1648,7 +1733,7 @@ async function closeSession() {
     d.currentActions = [];
     d.currentBallots = [];
     d.currentVoteResult = null;
-    d.currentManipulation = null;
+    d.currentSabotage = null;
     d.voteTimer = null;
     d.currentMaster = E.blankMasterAwards();
   }, { eventType: 'SESSION_CLOSED', summary: `Week ${S().game.currentRound} closed` });
@@ -1661,6 +1746,7 @@ async function rewindPhase() {
     let prior = E.previousPhase(d.game.status);
     if (prior === E.PHASE.MASTER && !settings().masterEnabled) prior = E.PHASE.MINIGAME;
     d.game.status = prior;
+    if (prior === E.PHASE.VOTING) publishSabotage(d);
   }, { eventType: 'PHASE_REWIND', summary: 'Admin rewound a phase' });
 }
 /* ================================================ PLAYER OVERRIDES ===== */
@@ -1693,7 +1779,7 @@ function openPlayerModal(id) {
     </div>
     <h3>Inventory</h3>
     ${inv.length ? `<ul class="feed">${inv.map((i) =>
-      `<li>${esc(ITEM_LABEL[i.rewardType] || i.rewardType)}
+      `<li>${esc(ITEM_LABEL[i.rewardType] || i.rewardType)}${i.targetId ? ` → ${esc(nameOf(i.targetId))}` : ''}
         <span class="badge ${i.status === 'STAGED' ? 'dormant' : 'out'}">${i.status}</span></li>`).join('')}</ul>`
       : '<p class="empty">Nothing held.</p>'}
     ${p.flags?.revealAlignmentOnDeath ? '<p class="faint">Alignment will be revealed on death.</p>' : ''}
@@ -1765,11 +1851,6 @@ function openSettings() {
     ${numeric.map((k) => `<label class="field"><span>${esc(SETTING_LABEL[k])}</span>
       <input type="number" step="1"
         min="0" data-set="${k}" value="${s[k]}"></label>`).join('')}
-    <label class="field"><span>${esc(SETTING_LABEL.voteManipulationDirection)}</span>
-      <select data-set="voteManipulationDirection">
-        <option value="1"${s.voteManipulationDirection === 1 ? ' selected' : ''}>Add a vote (+1)</option>
-        <option value="-1"${s.voteManipulationDirection === -1 ? ' selected' : ''}>Remove a vote (&minus;1)</option>
-      </select></label>
     <div class="checkline"><input type="checkbox" id="setImm" ${s.tempImmunityCoversVote ? 'checked' : ''}>
       <label for="setImm">${esc(SETTING_LABEL.tempImmunityCoversVote)}</label></div>
     <div class="checkline"><input type="checkbox" id="setMaster" ${s.masterEnabled ? 'checked' : ''}>

@@ -1,14 +1,19 @@
-/* mafia v1.1 | engine.js | 14 Oct 2026 */
+/* mafia v1.2 | engine.js | 14 Oct 2026 */
 /*
   v0.2: Doctor and Sheriff retired. Every non-Mafia player is a Civilian.
   The only night action is the Mafia kill; Temporary Immunity is the only
   thing that can block it. Everything else is unchanged.
   v0.3: Discussion and Voting are one phase. Ballots are public - every
   player can see who voted for whom - while hidden weights (Extra Vote,
-  Master double vote, Vote Manipulation) still only show in the final count.
+  Master double vote) still only show in the final count.
   v1.1: Parity counts every LIVING player, present or absent. A week away
   is not the same as being out of the game. checkEndgame also returns the
   counts so the console can show the admin exactly why it fired.
+  v1.2: Vote Manipulation retired. The Mafia store is now Recruit New Mafia
+  and SABOTAGE: pick a player when buying; they cannot vote at the next
+  Discuss & vote. One Sabotage can be waiting at a time. Temporary Immunity
+  blocks it. If the target is absent that week it waits for the next vote;
+  if the target is dead or blocked it is used up.
 */
 /*
   PURE GAME RULES. No DOM. No storage. No side effects.
@@ -25,6 +30,8 @@ export const ROLE = {
 };
 /** Roles that no longer exist. Old saves holding them become Civilian. */
 export const RETIRED_ROLES = ['DOCTOR', 'SHERIFF'];
+/** Items that no longer exist. Unused ones are refunded as a token on load. */
+export const RETIRED_ITEMS = ['VOTE_MANIPULATION'];
 export const ALIGNMENT = { GOOD: 'GOOD', MAFIA: 'MAFIA' };
 export const LIFE = { ALIVE: 'ALIVE', SPIRIT: 'SPIRIT' };
 export const ATTENDANCE = {
@@ -62,8 +69,8 @@ export const ITEM = {
   TEMP_IMMUNITY: 'TEMP_IMMUNITY',
   EXTRA_VOTE: 'EXTRA_VOTE',
   DISCOUNTED_RESURRECTION: 'DISCOUNTED_RESURRECTION',
-  VOTE_MANIPULATION: 'VOTE_MANIPULATION',
-  RECRUIT_NEW_MAFIA: 'RECRUIT_NEW_MAFIA'
+  RECRUIT_NEW_MAFIA: 'RECRUIT_NEW_MAFIA',
+  SABOTAGE: 'SABOTAGE'
 };
 export const STORE = {
   [ROLE.CIVILIAN]: [
@@ -72,13 +79,14 @@ export const STORE = {
     ITEM.DISCOUNTED_RESURRECTION
   ],
   [ROLE.MAFIA]: [
-    ITEM.VOTE_MANIPULATION,
-    ITEM.RECRUIT_NEW_MAFIA
+    ITEM.RECRUIT_NEW_MAFIA,
+    ITEM.SABOTAGE
   ]
 };
+/** Items that need a target chosen at purchase. */
+export const TARGETED_ITEMS = [ITEM.SABOTAGE];
 // Admin-configurable. Never hard-code these inline — surface them in settings.
 export const DEFAULT_SETTINGS = {
-  voteManipulationDirection: 1,        // +1 adds, -1 removes
   spiritPointsAttendance: 1,
   spiritPointsMinigameWin: 3,          // total, not additive
   resurrectionCost: 3,
@@ -206,6 +214,10 @@ const hasStagedItem = (player, type, round) =>
       it.status === 'STAGED' &&
       it.stagedRound === round
   );
+/** True if any Sabotage has been bought and not yet used. */
+export const sabotageWaiting = (players) =>
+  players.some((p) => (p.inventory || []).some(
+    (it) => it.rewardType === ITEM.SABOTAGE && it.status === 'OWNED'));
 export function canPurchase(player, rewardType, players, settings = DEFAULT_SETTINGS) {
   if (player.rewardTokens < 1) return { ok: false, reason: 'Insufficient tokens' };
   const store = STORE[player.role] || [];
@@ -217,8 +229,54 @@ export function canPurchase(player, rewardType, players, settings = DEFAULT_SETT
       return { ok: false, reason: 'Would exceed maximum active Mafia' };
     }
   }
+  if (rewardType === ITEM.SABOTAGE && sabotageWaiting(players)) {
+    return { ok: false, reason: 'A Sabotage is already waiting to be used' };
+  }
   return { ok: true };
 }
+/** Valid Sabotage target: a living player other than the buyer. */
+export function canSabotage(buyerId, targetId, players) {
+  const target = players.find((p) => p.id === targetId);
+  if (!target || !isAlive(target)) return { ok: false, reason: 'Pick a living player to sabotage' };
+  if (targetId === buyerId) return { ok: false, reason: 'You cannot sabotage yourself' };
+  return { ok: true };
+}
+// ---------------------------------------------------------------------------
+// Sabotage
+// ---------------------------------------------------------------------------
+/**
+ * The Sabotage that applies to this week's vote, if any.
+ * status:
+ *   ACTIVE   target is here and cannot vote
+ *   BLOCKED  target holds Temporary Immunity - used up, no effect
+ *   WAITING  target is alive but absent - carries to the next vote
+ *   WASTED   target is dead or gone - used up, no effect
+ * An item already USED this round still reports, so a re-tally after a
+ * rewind gives the same answer.
+ */
+export function sabotageFor(state) {
+  const round = state.game.currentRound;
+  for (const owner of state.players) {
+    const item = (owner.inventory || []).find((it) =>
+      it.rewardType === ITEM.SABOTAGE && it.targetId &&
+      ((it.status === 'OWNED' && (it.eligibleFromRound == null || it.eligibleFromRound <= round)) ||
+       (it.status === 'USED' && it.usedRound === round)));
+    if (!item) continue;
+    const target = state.players.find((p) => p.id === item.targetId);
+    let status;
+    if (!target || !isAlive(target)) status = 'WASTED';
+    else if (!isPresent(target)) status = 'WAITING';
+    else if (hasUsableItem(target, ITEM.TEMP_IMMUNITY, round)) status = 'BLOCKED';
+    else status = 'ACTIVE';
+    return { ownerId: owner.id, itemId: item.id, targetId: item.targetId, status };
+  }
+  return null;
+}
+/** The player who cannot vote this week, or null. */
+export const silencedId = (state) => {
+  const s = sabotageFor(state);
+  return s && s.status === 'ACTIVE' ? s.targetId : null;
+};
 // ---------------------------------------------------------------------------
 // Hidden action resolution
 // ---------------------------------------------------------------------------
@@ -347,18 +405,21 @@ export function confirmMasterAwards(state, proposedAwards = []) {
 /**
  * @param ballots [{voterId, targetId}]
  * @param master {confirmed, awards:[{key,title,playerId,prize}]}
- * @param manipulation {targetId, delta} — anonymous Mafia adjustment
+ * A sabotaged player's ballot is ignored.
  */
-export function resolveVote(state, ballots, master = {}, manipulation = null) {
+export function resolveVote(state, ballots, master = {}) {
   const settings = { ...DEFAULT_SETTINGS, ...(state.game.settings || {}) };
   const round = state.game.currentRound;
   const byId = new Map(state.players.map((p) => [p.id, p]));
   const totals = {};
   const log = [];
+  const sabotage = sabotageFor(state);
+  const silenced = sabotage && sabotage.status === 'ACTIVE' ? sabotage.targetId : null;
+  if (sabotage) log.push({ step: 'sabotage', ...sabotage });
   const valid = ballots.filter((b) => {
     const voter = byId.get(b.voterId);
     const target = byId.get(b.targetId);
-    return voter && target && isPresent(voter) && isPresent(target);
+    return voter && target && isPresent(voter) && isPresent(target) && b.voterId !== silenced;
   });
   for (const b of valid) {
     const voter = byId.get(b.voterId);
@@ -366,11 +427,6 @@ export function resolveVote(state, ballots, master = {}, manipulation = null) {
     if (hasStagedItem(voter, ITEM.EXTRA_VOTE, round)) weight += 1;
     if (masterDoubleVoteIds(master).includes(b.voterId)) weight += 1;
     totals[b.targetId] = (totals[b.targetId] || 0) + weight;
-  }
-  if (manipulation && manipulation.targetId) {
-    const delta = manipulation.delta ?? settings.voteManipulationDirection;
-    totals[manipulation.targetId] = (totals[manipulation.targetId] || 0) + delta;
-    log.push({ step: 'voteManipulation', targetId: manipulation.targetId, delta });
   }
   // Temporary Immunity removes a player from elimination consideration,
   // but their votes still counted above. Master immunity no longer exists.
@@ -396,6 +452,7 @@ export function resolveVote(state, ballots, master = {}, manipulation = null) {
     eliminated,
     tie,
     shielded: [...shielded],
+    sabotaged: silenced,
     revealedRole: victim ? victim.role : null,
     revealedAlignment:
       victim && victim.flags?.revealAlignmentOnDeath ? victim.alignment : null,

@@ -1,4 +1,4 @@
-/* mafia v1.1 | tests.js | 14 Oct 2026 */
+/* mafia v1.2 | tests.js | 14 Oct 2026 */
 /* Disposable test harness. Runs in Node or in the browser via tests.html. */
 import * as E from './engine.js';
 import { Store, MemoryAdapter, blankState, newPlayer, newInventoryItem } from './store.js';
@@ -53,6 +53,8 @@ const owned = (type, round) => ({
   status: 'OWNED',
   eligibleFromRound: round
 });
+/** A Sabotage bought last week, aimed at targetId. */
+const sabotage = (targetId, round) => newInventoryItem(E.ITEM.SABOTAGE, round - 1, targetId);
 // ===========================================================================
 suite('Role balance');
 test('10 players = 2 Mafia, 8 Civilians', () => {
@@ -213,15 +215,6 @@ test('old Master immunity no longer protects anyone', () => {
   ], { immunePlayerId:'m1' });
   eq(r.eliminated, 'm1');
 });
-test('Vote Manipulation applies anonymously', () => {
-  const s = makeState(baseCast);
-  const r = E.resolveVote(s,
-    [{ voterId: 'c1', targetId: 'c2' }, { voterId: 'c3', targetId: 'm1' }],
-    {}, { targetId: 'c2', delta: 1 });
-  eq(r.totals.c2, 2);
-  eq(r.eliminated, 'c2');
-  assert(!('voterId' in r.totals), 'totals expose no voter identity');
-});
 test('vote totals never identify who voted', () => {
   const s = makeState(baseCast);
   const r = E.resolveVote(s, [{ voterId: 'c1', targetId: 'm1' }]);
@@ -241,6 +234,68 @@ test('Spirits and Dormant players cannot vote or be voted for', () => {
   ]);
   eq(Object.keys(r.totals).length, 0);
   eq(r.eliminated, null);
+});
+// ===========================================================================
+suite('Sabotage');
+const sabCast = (round = 2, extra = {}) => makeState(baseCast.map(p => {
+  if (p.id === 'm1') return { ...p, inventory: [sabotage('c1', round)] };
+  return extra[p.id] ? { ...p, ...extra[p.id] } : p;
+}), { currentRound: round });
+test('a sabotaged player\'s ballot is ignored', () => {
+  const s = sabCast();
+  const r = E.resolveVote(s, [
+    { voterId: 'c1', targetId: 'm1' }, { voterId: 'c2', targetId: 'm1' },
+    { voterId: 'c3', targetId: 'c4' }, { voterId: 'c5', targetId: 'c4' }
+  ]);
+  eq(r.totals.m1, 1, 'c1 did not count');
+  eq(r.eliminated, 'c4');
+  eq(r.sabotaged, 'c1');
+});
+test('a sabotaged player can still be voted for', () => {
+  const s = sabCast();
+  const r = E.resolveVote(s, [{ voterId: 'c2', targetId: 'c1' }]);
+  eq(r.eliminated, 'c1');
+});
+test('Sabotage does nothing the week it is bought', () => {
+  const s = makeState(baseCast.map(p => p.id === 'm1'
+    ? { ...p, inventory: [newInventoryItem(E.ITEM.SABOTAGE, 2, 'c1')] } : p), { currentRound: 2 });
+  eq(E.sabotageFor(s), null);
+  eq(E.resolveVote(s, [{ voterId: 'c1', targetId: 'm1' }]).totals.m1, 1);
+});
+test('Temporary Immunity blocks Sabotage', () => {
+  const s = sabCast(2, { c1: { inventory: [owned(E.ITEM.TEMP_IMMUNITY, 2)] } });
+  eq(E.sabotageFor(s).status, 'BLOCKED');
+  eq(E.silencedId(s), null);
+  eq(E.resolveVote(s, [{ voterId: 'c1', targetId: 'm1' }]).totals.m1, 1, 'c1 still votes');
+});
+test('an absent target makes the Sabotage wait', () => {
+  const s = sabCast(2, { c1: { att: E.ATTENDANCE.DORMANT } });
+  eq(E.sabotageFor(s).status, 'WAITING');
+  eq(E.silencedId(s), null);
+});
+test('a dead target wastes the Sabotage', () => {
+  const s = sabCast(2, { c1: { life: E.LIFE.SPIRIT } });
+  eq(E.sabotageFor(s).status, 'WASTED');
+});
+test('a Sabotage used this week still applies on a re-tally', () => {
+  const s = sabCast();
+  s.players[0].inventory[0] = { ...s.players[0].inventory[0], status: 'USED', usedRound: 2 };
+  eq(E.silencedId(s), 'c1');
+});
+test('only one Sabotage can be waiting at a time', () => {
+  const s = sabCast(2, { m2: { tokens: 1 } });
+  const m2 = s.players.find(p => p.id === 'm2');
+  eq(E.canPurchase(m2, E.ITEM.SABOTAGE, s.players).ok, false);
+});
+test('Sabotage needs a living target other than the buyer', () => {
+  const s = makeState(baseCast.map(p => p.id === 'c5' ? { ...p, life: E.LIFE.SPIRIT } : p));
+  eq(E.canSabotage('m1', 'm1', s.players).ok, false);
+  eq(E.canSabotage('m1', 'c5', s.players).ok, false);
+  eq(E.canSabotage('m1', 'c1', s.players).ok, true);
+});
+test('Civilians cannot buy Sabotage', () => {
+  const s = makeState([{ id: 'c1', tokens: 3 }]);
+  eq(E.canPurchase(s.players[0], E.ITEM.SABOTAGE, s.players).ok, false);
 });
 // ===========================================================================
 suite('Master awards');
@@ -331,12 +386,16 @@ test('recruitment succeeds below the cap', () => {
 suite('Reward store access');
 test('a Civilian cannot buy a Mafia reward', () => {
   const s = makeState([{ id: 'c1', tokens: 5 }]);
-  eq(E.canPurchase(s.players[0], E.ITEM.VOTE_MANIPULATION, s.players).ok, false);
+  eq(E.canPurchase(s.players[0], E.ITEM.RECRUIT_NEW_MAFIA, s.players).ok, false);
 });
 test('stores exist only for Mafia and Civilian', () => {
   eq(Object.keys(E.STORE).sort().join(), 'CIVILIAN,MAFIA');
   eq(E.STORE[E.ROLE.CIVILIAN].join(), 'TEMP_IMMUNITY,EXTRA_VOTE,DISCOUNTED_RESURRECTION');
-  eq(E.STORE[E.ROLE.MAFIA].join(), 'VOTE_MANIPULATION,RECRUIT_NEW_MAFIA');
+  eq(E.STORE[E.ROLE.MAFIA].join(), 'RECRUIT_NEW_MAFIA,SABOTAGE');
+});
+test('Vote Manipulation is gone', () => {
+  assert(!('VOTE_MANIPULATION' in E.ITEM), 'no VOTE_MANIPULATION item');
+  assert(!('voteManipulationDirection' in E.DEFAULT_SETTINGS), 'no manipulation setting');
 });
 test('purchase blocked without a token', () => {
   const s = makeState([{ id: 'c1', tokens: 0 }]);
@@ -501,7 +560,7 @@ test('ballots are public: every player sees who voted for whom', () => {
   eq(view.currentBallots[0].targetId, 'm1');
   eq(view.currentBallots[0].source, undefined, 'nothing beyond voter and target leaks');
 });
-test('public ballots reveal only Master x2, not shop or manipulation weights', () => {
+test('public ballots reveal only Master x2, not shop weights', () => {
   const cast = baseCast.map(p => p.id === 'c1' ? { ...p, inventory:[staged(E.ITEM.EXTRA_VOTE, 1)] } : p);
   const s = makeState(cast); s.currentBallots = [{ voterId:'c1', targetId:'m1' }];
   s.currentMaster = { confirmed:true, awards:[{ key:'MOST_ENGAGED', playerId:'c2', prize:'DOUBLE_VOTE' }] };
@@ -594,6 +653,22 @@ test('old saves: Doctor and Sheriff become Civilian, nothing else changes', asyn
   eq(s.players.find(p => p.id === 'sh').spiritPoints, 1, 'points kept');
   eq(s.players.find(p => p.id === 'm1').role, E.ROLE.MAFIA, 'Mafia untouched');
   eq(s.currentActions.length, 1, 'retired action dropped, Mafia vote kept');
+});
+test('old saves: unused Vote Manipulation is removed and refunded', async () => {
+  const store = new Store(new MemoryAdapter());
+  await store.init();
+  const old = makeState([{ id: 'm1', role: E.ROLE.MAFIA, tokens: 1, inventory: [
+    { ...newInventoryItem('VOTE_MANIPULATION', 1) },
+    { ...newInventoryItem('VOTE_MANIPULATION', 1), status: 'USED', usedRound: 1 }
+  ] }]);
+  old.game.settings.voteManipulationDirection = 1;
+  old.currentManipulation = { targetId: 'm1', delta: 1 };
+  await store.importJson(JSON.stringify(old));
+  const m1 = store.get().players[0];
+  eq(m1.inventory.length, 0, 'both removed');
+  eq(m1.rewardTokens, 2, 'only the unused one refunded');
+  eq(store.get().currentManipulation, undefined);
+  eq(store.get().game.settings.voteManipulationDirection, undefined);
 });
 test('a save paused in the old Discussion phase resumes in Discuss & vote', async () => {
   const store = new Store(new MemoryAdapter());

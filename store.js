@@ -1,10 +1,11 @@
-/* mafia v1.0 | store.js | 30 Sep 2026 */
+/* mafia v1.2 | store.js | 14 Oct 2026 */
 /*
   ALL persistence lives here. No game rules. No DOM.
   This is the swappable adapter: replacing the LocalAdapter with a Supabase
   adapter later must require no changes to engine.js or ui.js.
+  v1.2: Vote Manipulation retired. Any unused one in a save is removed and
+  refunded as one token. Inventory items can carry a targetId (Sabotage).
 */
-
 import {
   ROLE,
   ALIGNMENT,
@@ -13,16 +14,14 @@ import {
   PHASE,
   DEFAULT_SETTINGS,
   RETIRED_ROLES,
+  RETIRED_ITEMS,
   blankMasterAwards
 } from './engine.js';
-
 export const SCHEMA_VERSION = 1;
 const STORAGE_KEY = 'weeklyMafia:v1';
-
 // ---------------------------------------------------------------------------
 // Serialisation safety
 // ---------------------------------------------------------------------------
-
 /**
  * A snapshot for the audit log's before/after payload.
  *
@@ -38,7 +37,6 @@ function snapshot(state) {
   const { audit, ...rest } = state;
   return structuredClone(rest);
 }
-
 /**
  * JSON.stringify that can never throw on a cycle. Any state written by an
  * older build may still contain the circular audit entries described above,
@@ -54,11 +52,9 @@ export function safeStringify(value, indent = 0) {
     return val;
   }, indent);
 }
-
 // ---------------------------------------------------------------------------
 // Schema
 // ---------------------------------------------------------------------------
-
 export function blankState(name = 'Weekly Mafia') {
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -81,14 +77,13 @@ export function blankState(name = 'Weekly Mafia') {
     currentActions: [],
     currentBallots: [],
     currentMaster: blankMasterAwards(),
-    currentManipulation: null,
+    currentSabotage: null,    // { targetId } - public, set only when a Sabotage is live
     voteTimer: null,          // { round, endsAt, remaining } - discuss & vote clock
     pendingPublicEvent: null,
     privateEvents: [],
     audit: []
   };
 }
-
 export function newPlayer(displayName, joinedRound = 0) {
   return {
     id: 'p_' + Math.random().toString(36).slice(2, 10),
@@ -106,7 +101,6 @@ export function newPlayer(displayName, joinedRound = 0) {
     accessType: 'PLAYER'
   };
 }
-
 /**
  * Doctor and Sheriff were retired in v0.2 of the engine. Any player still
  * holding one - from an old save, a backup, or a database row written before
@@ -116,8 +110,21 @@ export function retireRole(p) {
   if (!p || !RETIRED_ROLES.includes(p.role)) return p;
   return { ...p, role: ROLE.CIVILIAN, alignment: ALIGNMENT.GOOD };
 }
-
-export function newInventoryItem(rewardType, round) {
+/**
+ * Retired items are removed. Any not yet used is refunded as one token, so
+ * nobody loses what they paid for.
+ */
+export function retireItems(p) {
+  const inv = p?.inventory || [];
+  if (!inv.some((it) => RETIRED_ITEMS.includes(it.rewardType))) return p;
+  const refund = inv.filter((it) => RETIRED_ITEMS.includes(it.rewardType) && it.status !== 'USED').length;
+  return {
+    ...p,
+    rewardTokens: (p.rewardTokens || 0) + refund,
+    inventory: inv.filter((it) => !RETIRED_ITEMS.includes(it.rewardType))
+  };
+}
+export function newInventoryItem(rewardType, round, targetId = null) {
   return {
     id: 'i_' + Math.random().toString(36).slice(2, 10),
     rewardType,
@@ -126,14 +133,13 @@ export function newInventoryItem(rewardType, round) {
     eligibleFromRound: round + 1, // cannot apply retroactively
     expiresRound: null,
     stagedRound: null,
-    usedRound: null
+    usedRound: null,
+    targetId                      // Sabotage only
   };
 }
-
 // ---------------------------------------------------------------------------
 // Adapters
 // ---------------------------------------------------------------------------
-
 /** Stage 1: single browser, localStorage. */
 export class LocalAdapter {
   constructor(key = STORAGE_KEY) {
@@ -168,7 +174,6 @@ export class LocalAdapter {
     globalThis.localStorage?.removeItem(this.key);
   }
 }
-
 /** Test/SSR adapter — holds state in memory only. */
 export class MemoryAdapter {
   constructor(initial = null) {
@@ -185,18 +190,14 @@ export class MemoryAdapter {
     this.state = null;
   }
 }
-
 /*
   Stage 2 placeholder. Implemented when multi-device play is switched on.
   Must expose exactly load/save/clear so nothing else changes.
-
   export class SupabaseAdapter { ... }
 */
-
 // ---------------------------------------------------------------------------
 // Migration
 // ---------------------------------------------------------------------------
-
 export function migrate(state) {
   if (!state) return null;
   if (!state.schemaVersion) state.schemaVersion = 1;
@@ -207,6 +208,9 @@ export function migrate(state) {
   }
   state.game = { ...base.game, ...state.game, id: state.game?.id ?? base.game.id };
   state.game.settings = { ...DEFAULT_SETTINGS, ...(state.game.settings || {}) };
+  // Vote Manipulation is retired.
+  delete state.game.settings.voteManipulationDirection;
+  delete state.currentManipulation;
   // Discussion was merged into Voting. A save paused in it resumes there.
   if (state.game.status === 'DISCUSSION') state.game.status = PHASE.VOTING;
   // Old Master saves contained private immunity and one double-vote id. Both
@@ -235,23 +239,20 @@ export function migrate(state) {
       after: after ? snapshot(after) : undefined
     };
   });
-
-  state.players = (state.players || []).map((p) => retireRole({
+  state.players = (state.players || []).map((p) => retireItems(retireRole({
     ...newPlayer(p.displayName),
     ...p,
     inventory: p.inventory || [],
     flags: p.flags || {}
-  }));
+  })));
   // Actions for retired roles can never resolve; drop them.
   state.currentActions = (state.currentActions || []).filter(
     (a) => a.type !== 'DOCTOR_SAVE' && a.type !== 'SHERIFF_INVESTIGATE');
   return state;
 }
-
 // ---------------------------------------------------------------------------
 // Store — the only object ui.js talks to for state
 // ---------------------------------------------------------------------------
-
 export class Store {
   constructor(adapter = new LocalAdapter()) {
     this.adapter = adapter;
@@ -260,26 +261,21 @@ export class Store {
     /** Optional hook — ui.js sets this to surface save failures to the admin. */
     this.onError = null;
   }
-
   async init() {
     this.state = (await this.adapter.load()) || blankState();
     this.emit();
     return this.state;
   }
-
   get() {
     return this.state;
   }
-
   subscribe(fn) {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
   }
-
   emit() {
     for (const fn of this.listeners) fn(this.state);
   }
-
   /**
    * The single write path. Every mutation goes through here so that
    * persistence and audit are impossible to forget.
@@ -289,7 +285,6 @@ export class Store {
     const draft = structuredClone(this.state);
     const result = mutator(draft);
     const next = result === undefined ? draft : result;
-
     if (auditEntry) {
       next.audit = [
         ...(next.audit || []),
@@ -303,13 +298,11 @@ export class Store {
         }
       ];
     }
-
     this.state = next;
     await this.persist();
     this.emit();
     return this.state;
   }
-
   /**
    * Writes through to the adapter and reports failure instead of swallowing it.
    * A silent save failure means the admin keeps playing a session that is only
@@ -323,13 +316,11 @@ export class Store {
     }
     return ok;
   }
-
   async reset() {
     this.state = blankState();
     await this.persist();
     this.emit();
   }
-
   /**
    * Starts a fresh game WITHOUT throwing the roster away.
    * Keeps every player's id, so their database row and login link are
@@ -365,13 +356,10 @@ export class Store {
     this.emit();
     return this.state;
   }
-
   // --- Backup -------------------------------------------------------------
-
   exportJson() {
     return safeStringify(this.state, 2);
   }
-
   async importJson(json) {
     const raw = typeof json === 'string' ? JSON.parse(json) : json;
     if (!raw || typeof raw !== 'object' || !raw.game || !Array.isArray(raw.players)) {
@@ -383,7 +371,6 @@ export class Store {
     this.emit();
     return this.state;
   }
-
   /** Filename-safe timestamped backup name. */
   backupFilename() {
     const d = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
