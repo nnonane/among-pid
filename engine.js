@@ -1,4 +1,4 @@
-/* mafia v1.0 | engine.js | 30 Sep 2026 */
+/* mafia v1.1 | engine.js | 14 Oct 2026 */
 /*
   v0.2: Doctor and Sheriff retired. Every non-Mafia player is a Civilian.
   The only night action is the Mafia kill; Temporary Immunity is the only
@@ -6,6 +6,9 @@
   v0.3: Discussion and Voting are one phase. Ballots are public - every
   player can see who voted for whom - while hidden weights (Extra Vote,
   Master double vote, Vote Manipulation) still only show in the final count.
+  v1.1: Parity counts every LIVING player, present or absent. A week away
+  is not the same as being out of the game. checkEndgame also returns the
+  counts so the console can show the admin exactly why it fired.
 */
 /*
   PURE GAME RULES. No DOM. No storage. No side effects.
@@ -13,28 +16,22 @@
   This file must remain testable in isolation — it is what makes the
   Stage 2 (Supabase) swap safe.
 */
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
 export const ROLE = {
   MAFIA: 'MAFIA',
   CIVILIAN: 'CIVILIAN'
 };
 /** Roles that no longer exist. Old saves holding them become Civilian. */
 export const RETIRED_ROLES = ['DOCTOR', 'SHERIFF'];
-
 export const ALIGNMENT = { GOOD: 'GOOD', MAFIA: 'MAFIA' };
-
 export const LIFE = { ALIVE: 'ALIVE', SPIRIT: 'SPIRIT' };
-
 export const ATTENDANCE = {
   PRESENT: 'PRESENT',
   DORMANT: 'DORMANT',
   INACTIVE: 'INACTIVE'
 };
-
 export const PHASE = {
   CLOSED: 'CLOSED',
   ATTENDANCE: 'ATTENDANCE',
@@ -47,7 +44,6 @@ export const PHASE = {
   RESULTS: 'RESULTS',
   FINISHED: 'FINISHED'
 };
-
 export const PHASE_ORDER = [
   PHASE.CLOSED,
   PHASE.ATTENDANCE,
@@ -59,11 +55,9 @@ export const PHASE_ORDER = [
   PHASE.VOTING,
   PHASE.RESULTS
 ];
-
 export const ACTION = {
   MAFIA_KILL_VOTE: 'MAFIA_KILL_VOTE'
 };
-
 export const ITEM = {
   TEMP_IMMUNITY: 'TEMP_IMMUNITY',
   EXTRA_VOTE: 'EXTRA_VOTE',
@@ -71,7 +65,6 @@ export const ITEM = {
   VOTE_MANIPULATION: 'VOTE_MANIPULATION',
   RECRUIT_NEW_MAFIA: 'RECRUIT_NEW_MAFIA'
 };
-
 export const STORE = {
   [ROLE.CIVILIAN]: [
     ITEM.TEMP_IMMUNITY,
@@ -83,7 +76,6 @@ export const STORE = {
     ITEM.RECRUIT_NEW_MAFIA
   ]
 };
-
 // Admin-configurable. Never hard-code these inline — surface them in settings.
 export const DEFAULT_SETTINGS = {
   voteManipulationDirection: 1,        // +1 adds, -1 removes
@@ -96,11 +88,9 @@ export const DEFAULT_SETTINGS = {
   masterEnabled: true,
   voteMinutes: 5                       // discussion & vote timer
 };
-
 // ---------------------------------------------------------------------------
 // Seeded RNG — deterministic and auditable. Never use Math.random().
 // ---------------------------------------------------------------------------
-
 export function makeRng(seed) {
   let s = seed >>> 0;
   const draws = [];
@@ -139,31 +129,24 @@ export function makeRng(seed) {
     }
   };
 }
-
 // ---------------------------------------------------------------------------
 // Player selectors
 // ---------------------------------------------------------------------------
-
 export const isProfileActive = (p) => p.attendanceStatus !== ATTENDANCE.INACTIVE;
 export const isAlive = (p) => p.lifeStatus === LIFE.ALIVE && isProfileActive(p);
 export const isPresent = (p) =>
   isAlive(p) && p.attendanceStatus === ATTENDANCE.PRESENT;
 export const isSpirit = (p) =>
   p.lifeStatus === LIFE.SPIRIT && isProfileActive(p);
-
 /** Players who can act, vote, or be targeted this round. */
 export const eligiblePlayers = (players) => players.filter(isPresent);
-
 export const alignmentOf = (role) =>
   role === ROLE.MAFIA ? ALIGNMENT.MAFIA : ALIGNMENT.GOOD;
-
 export const countAliveMafia = (players) =>
   players.filter((p) => isAlive(p) && p.role === ROLE.MAFIA).length;
-
 // ---------------------------------------------------------------------------
 // Role balance
 // ---------------------------------------------------------------------------
-
 /**
  * Starting distribution per the design overview. Mafia counts are unchanged;
  * everyone who is not Mafia is a Civilian.
@@ -178,7 +161,6 @@ export function startingBalance(playerCount) {
   else mafia = 4;
   return { mafia, civilian: Math.max(playerCount - mafia, 0) };
 }
-
 export function assignStartingRoles(players, rng) {
   const balance = startingBalance(players.length);
   const order = rng.shuffle(players.map((p) => p.id), 'initial role assignment');
@@ -186,13 +168,11 @@ export function assignStartingRoles(players, rng) {
   let i = 0;
   for (let n = 0; n < balance.mafia; n++) roles.set(order[i++], ROLE.MAFIA);
   while (i < order.length) roles.set(order[i++], ROLE.CIVILIAN);
-
   return players.map((p) => {
     const role = roles.get(p.id);
     return { ...p, role, alignment: alignmentOf(role) };
   });
 }
-
 /**
  * Late joiner. Returns a suggested role only — the Super Admin previews and
  * may override before activation.
@@ -207,11 +187,9 @@ export function suggestLateJoinerRole(players, rng, settings = DEFAULT_SETTINGS)
   }
   return rng.pick(allowed, 'late joiner role');
 }
-
 // ---------------------------------------------------------------------------
 // Inventory helpers
 // ---------------------------------------------------------------------------
-
 const hasUsableItem = (player, type, round) =>
   (player.inventory || []).some(
     (it) =>
@@ -220,7 +198,6 @@ const hasUsableItem = (player, type, round) =>
       (it.eligibleFromRound == null || it.eligibleFromRound <= round) &&
       (it.expiresRound == null || it.expiresRound >= round)
   );
-
 /** Items the player has explicitly staged for use this round. */
 const hasStagedItem = (player, type, round) =>
   (player.inventory || []).some(
@@ -229,7 +206,6 @@ const hasStagedItem = (player, type, round) =>
       it.status === 'STAGED' &&
       it.stagedRound === round
   );
-
 export function canPurchase(player, rewardType, players, settings = DEFAULT_SETTINGS) {
   if (player.rewardTokens < 1) return { ok: false, reason: 'Insufficient tokens' };
   const store = STORE[player.role] || [];
@@ -243,11 +219,9 @@ export function canPurchase(player, rewardType, players, settings = DEFAULT_SETT
   }
   return { ok: true };
 }
-
 // ---------------------------------------------------------------------------
 // Hidden action resolution
 // ---------------------------------------------------------------------------
-
 /**
  * Resolves the hidden-action phase.
  * @returns {{ death, blockedBy, savedTarget, mafiaTarget, publicEvent, privateEvents, log }}
@@ -263,14 +237,11 @@ export function resolveHiddenActions(state, rng) {
     if (a.targetId && (!target || !isPresent(target))) return false;
     return true;
   });
-
   const log = [];
   const privateEvents = [];
-
   // --- 1. Mafia target -----------------------------------------------------
   const mafiaBallots = actions.filter((a) => a.type === ACTION.MAFIA_KILL_VOTE);
   let mafiaTarget = null;
-
   if (mafiaBallots.length) {
     const tally = {};
     for (const b of mafiaBallots) tally[b.targetId] = (tally[b.targetId] || 0) + 1;
@@ -281,12 +252,10 @@ export function resolveHiddenActions(state, rng) {
   } else {
     log.push({ step: 'mafiaTarget', chosen: null, note: 'No Mafia ballots submitted' });
   }
-
   // --- 2. Immunity ---------------------------------------------------------
   const immune = new Set(
     players.filter((p) => hasUsableItem(p, ITEM.TEMP_IMMUNITY, round)).map((p) => p.id)
   );
-
   // --- 3. Kill outcome -----------------------------------------------------
   let death = null;
   let blockedBy = null;
@@ -295,7 +264,6 @@ export function resolveHiddenActions(state, rng) {
     else death = mafiaTarget;
   }
   log.push({ step: 'killOutcome', mafiaTarget, blockedBy, death });
-
   // --- 4. Public event — sealed until after minigame and rewards -----------
   const victim = death ? byId.get(death) : null;
   const survivor = blockedBy ? byId.get(mafiaTarget) : null;
@@ -314,7 +282,6 @@ export function resolveHiddenActions(state, rng) {
           text: `The Mafia came for ${survivor.displayName} last night, but ${survivor.displayName} lived to tell the tale.`
         }
       : { type: 'NO_DEATH', text: 'No one was killed.' };
-
   return {
     mafiaTarget,
     death,
@@ -326,7 +293,6 @@ export function resolveHiddenActions(state, rng) {
     rngDraws: rng.draws
   };
 }
-
 // ---------------------------------------------------------------------------
 // Master awards
 // ---------------------------------------------------------------------------
@@ -356,7 +322,6 @@ export function confirmMasterAwards(state, proposedAwards = []) {
     return { ok: same, changed: false, reason: same ? 'Awards already confirmed.' : 'Awards are already confirmed and cannot be changed.', state };
   }
   const eligible = new Set(state.players.filter(isPresent).map((p) => p.id));
-  const defs = new Map(MASTER_AWARD_DEFS.map((a) => [a.key, a]));
   const awards = MASTER_AWARD_DEFS.map((def) => {
     const pick = proposedAwards.find((a) => a.key === def.key) || {};
     const playerId = pick.playerId && eligible.has(pick.playerId) ? pick.playerId : null;
@@ -376,11 +341,9 @@ export function confirmMasterAwards(state, proposedAwards = []) {
     state: { ...state, players, currentMaster: { confirmed: true, awards, paidAwardKeys } }
   };
 }
-
 // ---------------------------------------------------------------------------
 // Public vote
 // ---------------------------------------------------------------------------
-
 /**
  * @param ballots [{voterId, targetId}]
  * @param master {confirmed, awards:[{key,title,playerId,prize}]}
@@ -392,13 +355,11 @@ export function resolveVote(state, ballots, master = {}, manipulation = null) {
   const byId = new Map(state.players.map((p) => [p.id, p]));
   const totals = {};
   const log = [];
-
   const valid = ballots.filter((b) => {
     const voter = byId.get(b.voterId);
     const target = byId.get(b.targetId);
     return voter && target && isPresent(voter) && isPresent(target);
   });
-
   for (const b of valid) {
     const voter = byId.get(b.voterId);
     let weight = 1;
@@ -406,13 +367,11 @@ export function resolveVote(state, ballots, master = {}, manipulation = null) {
     if (masterDoubleVoteIds(master).includes(b.voterId)) weight += 1;
     totals[b.targetId] = (totals[b.targetId] || 0) + weight;
   }
-
   if (manipulation && manipulation.targetId) {
     const delta = manipulation.delta ?? settings.voteManipulationDirection;
     totals[manipulation.targetId] = (totals[manipulation.targetId] || 0) + delta;
     log.push({ step: 'voteManipulation', targetId: manipulation.targetId, delta });
   }
-
   // Temporary Immunity removes a player from elimination consideration,
   // but their votes still counted above. Master immunity no longer exists.
   const shielded = new Set();
@@ -421,11 +380,9 @@ export function resolveVote(state, ballots, master = {}, manipulation = null) {
       if (hasUsableItem(p, ITEM.TEMP_IMMUNITY, round)) shielded.add(p.id);
     }
   }
-
   const considered = Object.keys(totals).filter((id) => !shielded.has(id));
   let eliminated = null;
   let tie = false;
-
   if (considered.length) {
     const top = Math.max(...considered.map((id) => totals[id]));
     const leaders = considered.filter((id) => totals[id] === top);
@@ -433,7 +390,6 @@ export function resolveVote(state, ballots, master = {}, manipulation = null) {
     else tie = true;
     log.push({ step: 'tally', totals, shielded: [...shielded], top, leaders });
   }
-
   const victim = eliminated ? byId.get(eliminated) : null;
   return {
     totals,           // public
@@ -446,17 +402,14 @@ export function resolveVote(state, ballots, master = {}, manipulation = null) {
     log
   };
 }
-
 // ---------------------------------------------------------------------------
 // Death, succession, Legacy
 // ---------------------------------------------------------------------------
-
 export function killPlayer(players, playerId) {
   return players.map((p) =>
     p.id === playerId ? { ...p, lifeStatus: LIFE.SPIRIT } : p
   );
 }
-
 /**
  * One-time only. Fires when active Mafia first reaches zero.
  * Countdown may disable an unused Legacy.
@@ -466,12 +419,10 @@ export function checkMafiaLegacy(state, rng) {
   if (game.legacyUsed) return { triggered: false, reason: 'Legacy already used' };
   if (game.countdownDisablesLegacy) return { triggered: false, reason: 'Disabled by Countdown' };
   if (countAliveMafia(players) > 0) return { triggered: false, reason: 'Mafia still active' };
-
   const candidates = players
     .filter((p) => isAlive(p) && p.role === ROLE.CIVILIAN)
     .map((p) => p.id);
   if (!candidates.length) return { triggered: false, reason: 'No eligible Civilian' };
-
   const chosenId = rng.pick(candidates, 'mafia legacy');
   return {
     triggered: true,
@@ -482,7 +433,6 @@ export function checkMafiaLegacy(state, rng) {
     game: { ...game, legacyUsed: true }
   };
 }
-
 export function recruitMafia(state, targetId, settings = DEFAULT_SETTINGS) {
   if (countAliveMafia(state.players) >= settings.maxActiveMafiaFromRecruit) {
     return { ok: false, reason: 'Would exceed maximum active Mafia' };
@@ -498,11 +448,9 @@ export function recruitMafia(state, targetId, settings = DEFAULT_SETTINGS) {
     )
   };
 }
-
 // ---------------------------------------------------------------------------
 // Spirits and resurrection
 // ---------------------------------------------------------------------------
-
 export function awardSpiritPoints(players, { attendedIds = [], minigameWinnerIds = [] }, settings = DEFAULT_SETTINGS) {
   const winners = new Set(minigameWinnerIds);
   return players.map((p) => {
@@ -517,24 +465,20 @@ export function awardSpiritPoints(players, { attendedIds = [], minigameWinnerIds
     return p;
   });
 }
-
 export function resurrectionCost(player, settings = DEFAULT_SETTINGS) {
   const discounted = (player.inventory || []).some(
     (it) => it.rewardType === ITEM.DISCOUNTED_RESURRECTION && it.status === 'OWNED'
   );
   return discounted ? settings.resurrectionDiscountedCost : settings.resurrectionCost;
 }
-
 export function resurrect(state, playerId) {
   const settings = { ...DEFAULT_SETTINGS, ...(state.game.settings || {}) };
   const player = state.players.find((p) => p.id === playerId);
   if (!player || !isSpirit(player)) return { ok: false, reason: 'Not a Spirit' };
-
   const cost = resurrectionCost(player, settings);
   if (player.spiritPoints < cost) {
     return { ok: false, reason: `Needs ${cost} Spirit Points, has ${player.spiritPoints}` };
   }
-
   const usedDiscount = cost === settings.resurrectionDiscountedCost;
   const players = state.players.map((p) => {
     if (p.id !== playerId) return p;
@@ -552,48 +496,37 @@ export function resurrect(state, playerId) {
       )
     };
   });
-
   return { ok: true, players, cost };
 }
-
 // ---------------------------------------------------------------------------
 // Endgame
 // ---------------------------------------------------------------------------
-
 /**
- * Parity excludes Spirits and Dormant players.
+ * Parity counts every LIVING player, present or absent. Being away for a
+ * week is not the same as being out of the game. Spirits and players who
+ * have left permanently are still excluded (isAlive handles both).
  * Call AFTER Legacy has been evaluated.
+ * The console never ends the game from this alone - it asks the admin first.
  */
 export function checkEndgame(state) {
   const { game, players } = state;
-  const activeMafia = players.filter(
-    (p) => isPresent(p) && p.role === ROLE.MAFIA
-  ).length;
-  const activeGood = players.filter(
-    (p) => isPresent(p) && p.role !== ROLE.MAFIA
-  ).length;
-  const aliveMafia = countAliveMafia(players);
-
-  if (aliveMafia === 0 && (game.legacyUsed || game.countdownDisablesLegacy)) {
-    return { finished: true, winner: 'GOOD', reason: 'No Mafia remain and Legacy is spent' };
+  const activeMafia = players.filter((p) => isAlive(p) && p.role === ROLE.MAFIA).length;
+  const activeGood = players.filter((p) => isAlive(p) && p.role !== ROLE.MAFIA).length;
+  const counts = { activeMafia, activeGood };
+  if (activeMafia === 0 && (game.legacyUsed || game.countdownDisablesLegacy)) {
+    return { finished: true, winner: 'GOOD', reason: 'No Mafia remain and Legacy is spent', ...counts };
   }
   if (activeMafia > 0 && activeMafia >= activeGood) {
-    return { finished: true, winner: 'MAFIA', reason: 'Mafia equal or outnumber living Good players' };
+    return { finished: true, winner: 'MAFIA', reason: 'Mafia equal or outnumber living Good players', ...counts };
   }
   if (game.countdownEnabled && game.roundsRemaining <= 0) {
-    return {
-      finished: true,
-      winner: aliveMafia === 0 ? 'GOOD' : 'MAFIA',
-      reason: 'Countdown expired'
-    };
+    return { finished: true, winner: activeMafia === 0 ? 'GOOD' : 'MAFIA', reason: 'Countdown expired', ...counts };
   }
-  return { finished: false, activeMafia, activeGood };
+  return { finished: false, ...counts };
 }
-
 // ---------------------------------------------------------------------------
 // Phase machine
 // ---------------------------------------------------------------------------
-
 export function nextPhase(current) {
   if (current === PHASE.FINISHED) return PHASE.FINISHED;
   const i = PHASE_ORDER.indexOf(current);
@@ -601,17 +534,14 @@ export function nextPhase(current) {
   // RESULTS loops back to CLOSED; the round counter increments on reopen.
   return i === PHASE_ORDER.length - 1 ? PHASE.CLOSED : PHASE_ORDER[i + 1];
 }
-
 export function previousPhase(current) {
   const i = PHASE_ORDER.indexOf(current);
   return i <= 0 ? PHASE.CLOSED : PHASE_ORDER[i - 1];
 }
-
 /** What a given viewer is permitted to see. Enforced again in ui.js. */
 export function visibleStateFor(state, viewer) {
   const isAdmin = viewer.accessType === 'SUPER_ADMIN' || viewer.accessType === 'SPECTATOR_ADMIN';
   if (isAdmin) return state;
-
   const closed = state.game.status === PHASE.CLOSED;
   return {
     ...state,

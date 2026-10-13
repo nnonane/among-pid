@@ -1,21 +1,17 @@
-/* mafia v1.0 | ui.js | 30 Sep 2026 */
+/* mafia v1.1 | ui.js | 14 Oct 2026 */
 /*
   Rendering and admin controls. Talks to store.js and engine.js only.
   Contains NO game rules — anything that decides an outcome lives in engine.js.
-
   v0.4 added live player submissions. The console READS what players submitted
   from player.html instead of only taking dictation. Three things are
   deliberately unchanged:
-
     1. engine.js. Submissions are folded into currentActions and
        currentBallots in exactly the shape it already consumed.
     2. The manual path. Every dropdown still works, for the player whose
        laptop died, and an admin edit always outranks a later sync.
     3. Offline mode. With no cloud there is no sync, and the console runs
        precisely as it did in v0.2.3.
-
   v0.5 fixes the Rewards race that lost the Doctor's token.
-
   The winner checkbox called store.commit() WITHOUT awaiting it, while the
   5-second poll re-rendered the whole Rewards view underneath it. A poll
   landing mid-commit rebuilt the winners table from state that had not yet
@@ -23,27 +19,29 @@
   paid. The fix is an `editing` latch: the poll refuses to redraw while a
   commit from a form control is in flight, and the handler now awaits its
   own write. Nothing about the award logic itself changed - it was correct.
-
   v0.6 fixes restarting a game online, and adds a Reset button. Reset keeps
   the same player rows (so logins survive) and wipes only the game data.
   Adding a player checks the live database first, so the same name can no
   longer create a duplicate.
-
   v0.7 retires the Doctor and Sheriff. Everyone who is not Mafia is a
   Civilian, the only night action is the Mafia kill, and Temporary Immunity
   is the only thing that blocks it. Old saves convert automatically.
-
   v0.8 merges Discussion and Voting into one "Discuss & vote" phase on a
   shared timer (5 minutes by default, in Settings). Ballots are public: a
   vote board on every screen shows who voted for whom. Online, the ballots
   table is the single source of truth - admin corrections are written to it
   too, so every screen and the tally always agree.
-
   v0.9 reveals the voted-out player's role to every player's screen (via
   reveal_role.sql). The console already showed it; the final vote board now
   also tags the eliminated player with their role.
+  v1.1 ENDGAME CONTINGENCIES. The game ended in week 2 because absent
+  players were treated as gone. Now:
+    1. Absent (Dormant) players count towards parity (engine.js).
+    2. The game NEVER ends by itself. The admin sees the numbers and
+       confirms; Cancel keeps playing and is logged.
+    3. A "Resume this game" button on the Game over screen puts a game that
+       ended by mistake back where it stopped, with nothing else changed.
 */
-
 import * as E from './engine.js';
 import { Store, LocalAdapter, newPlayer, newInventoryItem, retireRole } from './store.js';
 import { chooseAdapter, mountStorageButton } from './cloud.js';
@@ -52,46 +50,35 @@ import {
   GAME_TITLE, GAME_SUBTITLE, MINIGAMES,
   PHASE_LABEL, PHASE_HINT, ROLE_LABEL, ITEM_LABEL, ITEM_HINT, SETTING_LABEL
 } from './content.js';
-
 const { adapter, mode, sb } = await chooseAdapter();
 const store = new Store(adapter);
-
 /* Null in offline mode. Every call site checks. */
 const live = mode === 'cloud' && sb ? new Live(sb) : null;
-
 /* Pending purchase requests for the current week, refreshed by pollNow(). */
 let pendingPurchases = [];
-
 /* One poll timer for the whole app, cleared at the top of every render so a
    phase change can never leave two of them running. */
 let pollTimer = null;
-
 /* Raised while a form control is mid-commit. The poll will not re-render
    while this is set, so a checkbox cannot be redrawn from stale state
    between the click and the write landing. */
 let editing = false;
-
 /* ---------------------------------------------------------------- helpers */
-
 const $ = (id) => document.getElementById(id);
-
 const el = (tag, cls, html) => {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
   if (html != null) n.innerHTML = html;
   return n;
 };
-
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
 const S = () => store.get();
 const settings = () => ({ ...E.DEFAULT_SETTINGS, ...(S().game.settings || {}) });
 const byId = (id) => S().players.find((p) => p.id === id);
 const nameOf = (id) => byId(id)?.displayName ?? 'Unknown';
 const roleLabel = (r) => ROLE_LABEL[r] ?? r;
-
 /** Deterministic per-round, per-purpose seed so reruns are reproducible. */
 const rngFor = (purpose) => {
   const g = S().game;
@@ -99,7 +86,6 @@ const rngFor = (purpose) => {
   for (const ch of purpose) h = (h * 31 + ch.charCodeAt(0)) | 0;
   return E.makeRng((g.rngSeed + g.currentRound * 7919 + h) >>> 0);
 };
-
 let toastTimer;
 function toast(msg, warn = false) {
   const t = $('toast');
@@ -108,7 +94,6 @@ function toast(msg, warn = false) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (t.className = ''), 3200);
 }
-
 function confirmAction(question, detail = '') {
   return new Promise((resolve) => {
     openModal(`
@@ -123,7 +108,6 @@ function confirmAction(question, detail = '') {
     });
   });
 }
-
 function openModal(html, wire) {
   const host = $('modalHost');
   host.innerHTML = '';
@@ -140,13 +124,11 @@ function openModal(html, wire) {
   if (first) first.focus();
   return close;
 }
-
 /** Every mutation goes through here so audit is never forgotten. */
 async function commit(mutator, audit) {
   await store.commit(mutator, audit);
   render();
 }
-
 /**
  * A commit raised by a form control the admin is actively using.
  *
@@ -164,7 +146,6 @@ async function commitQuiet(mutator, audit) {
     editing = false;
   }
 }
-
 /* ==================================================== LIVE SUBMISSIONS == */
 /*
   The console polls rather than subscribing. Polling is boring, survives a
@@ -172,7 +153,6 @@ async function commitQuiet(mutator, audit) {
   anyone can type. A realtime channel would be neater and would also need a
   reconnect story on a night when the wifi is unreliable.
 */
-
 /**
  * Pulls this week's submissions and folds them into state.
  * Returns true only if something actually changed, so an admin halfway
@@ -182,11 +162,9 @@ async function pollNow({ silent = true } = {}) {
   if (!live) return false;
   const round = S().game.currentRound;
   if (!round) return false;
-
   const phase = S().game.status;
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   let changed = false;
-
   if (phase === E.PHASE.HIDDEN_ACTIONS) {
     const merged = mergeActions(S().currentActions || [], await live.fetchActions(round));
     if (!same(merged, S().currentActions || [])) {
@@ -194,7 +172,6 @@ async function pollNow({ silent = true } = {}) {
       changed = true;
     }
   }
-
   if (phase === E.PHASE.VOTING) {
     /* Online, the ballots table IS the vote. Admin corrections are written
        there as well (setBallot), so there is nothing to merge - just mirror
@@ -206,7 +183,6 @@ async function pollNow({ silent = true } = {}) {
       changed = true;
     }
   }
-
   if (phase === E.PHASE.REWARDS) {
     const next = await live.fetchPendingPurchases(round);
     if (!same(next, pendingPurchases)) {
@@ -214,11 +190,9 @@ async function pollNow({ silent = true } = {}) {
       changed = true;
     }
   }
-
   if (live.lastError && !silent) toast('Sync problem: ' + live.lastError, true);
   return changed;
 }
-
 /** Only the three phases that have anything to collect are polled. */
 function startPolling() {
   clearInterval(pollTimer);
@@ -234,7 +208,6 @@ function startPolling() {
     if (await pollNow()) render();
   }, S().game.status === E.PHASE.VOTING ? 3000 : 5000);
 }
-
 /**
  * The waiting-on banner. This is the thing that actually saves time on the
  * night: it names who has not submitted, so nobody has to ask the room
@@ -242,7 +215,6 @@ function startPolling() {
  */
 function liveBanner(expected, haveIds, noun) {
   const wrap = el('div', 'card');
-
   if (!live) {
     wrap.innerHTML = `
       <h2>Player submissions</h2>
@@ -250,7 +222,6 @@ function liveBanner(expected, haveIds, noun) {
         Enter every ${esc(noun)} by hand below.</div>`;
     return wrap;
   }
-
   const waiting = expected.filter((p) => !haveIds.has(p.id));
   wrap.innerHTML = `
     <h2>Player submissions
@@ -265,36 +236,29 @@ function liveBanner(expected, haveIds, noun) {
     <div class="btn-row" style="margin-top:0">
       <button class="btn sm" id="syncNow">Refresh now</button>
     </div>`;
-
   wrap.querySelector('#syncNow').onclick = async () => {
     await pollNow({ silent: false });
     render();
   };
   return wrap;
 }
-
 /* ------------------------------------------------------------- selectors */
-
 const living = () => S().players.filter(E.isAlive);
 const present = () => S().players.filter(E.isPresent);
 const spirits = () => S().players.filter(E.isSpirit);
 const activeRoster = () => S().players.filter(E.isProfileActive);
-
 const actionsOf = (type) => (S().currentActions || []).filter((a) => a.type === type);
 const actionBy = (actorId) => (S().currentActions || []).find((a) => a.actorId === actorId);
-
 const isStaged = (p, type) =>
   (p.inventory || []).some(
     (i) => i.rewardType === type && i.status === 'STAGED' && i.stagedRound === S().game.currentRound
   );
-
 const ownsUsable = (p, type) =>
   (p.inventory || []).some(
     (i) =>
       i.rewardType === type && i.status === 'OWNED' &&
       (i.eligibleFromRound == null || i.eligibleFromRound <= S().game.currentRound)
   );
-
 /**
  * Distinguishes a submission the player made themselves from one the admin
  * typed in. Worth showing: if a row says Admin when you did not touch it,
@@ -305,11 +269,9 @@ function sourceLabel(entry, doneWord = 'Submitted') {
   if (!entry) return 'Waiting';
   return entry.source === SOURCE.ADMIN ? 'Admin entry' : doneWord;
 }
-
 function playerOption(p, selected) {
   return `<option value="${p.id}"${selected === p.id ? ' selected' : ''}>${esc(p.displayName)}</option>`;
 }
-
 function targetSelect(name, current, { exclude = [], pool = present(), blank = '— none —' } = {}) {
   const opts = pool
     .filter((p) => !exclude.includes(p.id))
@@ -317,20 +279,16 @@ function targetSelect(name, current, { exclude = [], pool = present(), blank = '
     .join('');
   return `<select data-field="${name}"><option value="">${blank}</option>${opts}</select>`;
 }
-
 /* ============================================================ CHROME ==== */
-
 function renderChrome() {
   const g = S().game;
   $('brandTitle').textContent = GAME_TITLE;
   $('brandSub').textContent = GAME_SUBTITLE;
   $('roundNum').textContent = g.currentRound || '—';
   $('phaseName').textContent = PHASE_LABEL[g.status] ?? g.status;
-
   const cd = $('countdownChip');
   cd.hidden = !g.countdownEnabled;
   if (g.countdownEnabled) $('countdownNum').textContent = g.roundsRemaining ?? '—';
-
   // Phase rail
   const rail = $('phaseRail');
   rail.innerHTML = '';
@@ -340,7 +298,6 @@ function renderChrome() {
       : i === idx ? 'active' : i < idx ? 'done' : '';
     rail.appendChild(el('li', cls, `<span class="dot"></span>${esc(PHASE_LABEL[ph])}`));
   });
-
   $('btnBack').disabled = g.status === E.PHASE.CLOSED || g.status === E.PHASE.FINISHED;
   $('btnNext').disabled = g.status === E.PHASE.FINISHED;
   $('btnNext').textContent =
@@ -348,22 +305,18 @@ function renderChrome() {
     : g.status === E.PHASE.RESULTS ? 'Close session →'
     : 'Advance phase →';
   $('railNote').textContent = PHASE_HINT[g.status] ?? '';
-
   renderRoster();
   renderFeed();
 }
-
 function renderRoster() {
   const list = $('roster');
   list.innerHTML = '';
   const all = activeRoster();
   $('rosterCount').textContent = `${living().length} alive · ${spirits().length} spirit`;
-
   if (!all.length) {
     list.appendChild(el('li', '', '<span class="faint">No players yet.</span>'));
     return;
   }
-
   const order = { ALIVE: 0, SPIRIT: 1 };
   [...all]
     .sort((a, b) =>
@@ -384,7 +337,6 @@ function renderRoster() {
       list.appendChild(li);
     });
 }
-
 function renderFeed() {
   const feed = $('feed');
   feed.innerHTML = '';
@@ -399,7 +351,6 @@ function renderFeed() {
       `${esc(e.summary || e.eventType)}<span class="when">Week ${e.round} · ${when}</span>`));
   }
 }
-
 /* ====================================================== ROSTER SYNC ==== */
 /** Pulls in player rows that exist in the database but not in this console.
     Does nothing offline. Never removes anyone. */
@@ -414,7 +365,6 @@ async function syncRosterFromDatabase() {
     { eventType: 'ROSTER_SYNCED',
       summary: `${missing.length} player(s) loaded from the database` });
 }
-
 /* ============================================================ RESET ===== */
 function downloadBackup() {
   const blob = new Blob([store.exportJson()], { type: 'application/json' });
@@ -426,7 +376,6 @@ function downloadBackup() {
   a.click();
   setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
 }
-
 function openResetPanel() {
   openModal(`
     <h2>Reset the game</h2>
@@ -479,7 +428,6 @@ function openResetPanel() {
     allBtn.onclick = () => run(false);
   });
 }
-
 /** Stop polling, re-read roster, clear submissions, write the new game.
     Same player ids = same rows = same logins. */
 async function resetGame(keepPlayers) {
@@ -512,9 +460,7 @@ async function resetGame(keepPlayers) {
     ? `New game ready - ${S().players.length} player(s) kept. Deal roles when ready.`
     : 'Everything wiped. Add players to start.');
 }
-
 /* ========================================================== PHASES ====== */
-
 function render() {
   clearInterval(clockHandle);
   clockHandle = null;
@@ -537,13 +483,10 @@ function render() {
   }[g.status] || viewClosed;
   view(main);
 }
-
 /* ------------------------------------------------------------- CLOSED --- */
-
 function viewClosed(main) {
   const g = S().game;
   const started = g.currentRound > 0;
-
   const card = el('div', 'card accent');
   card.innerHTML = `
     <h2>${started ? 'Between sessions' : 'Set up the game'}</h2>
@@ -558,7 +501,6 @@ function viewClosed(main) {
     </div>
     <p class="faint" id="balanceNote"></p>`;
   main.appendChild(card);
-
   const note = card.querySelector('#balanceNote');
   const count = activeRoster().length;
   if (!started) {
@@ -569,7 +511,6 @@ function viewClosed(main) {
   } else {
     note.textContent = 'New players joining mid-game receive a balance-based role on their first session.';
   }
-
   const addPlayer = async () => {
     const input = card.querySelector('#newName');
     const name = input.value.trim().replace(/\s+/g, ' ');
@@ -599,7 +540,6 @@ function viewClosed(main) {
   };
   card.querySelector('#btnAdd').onclick = addPlayer;
   card.querySelector('#newName').onkeydown = (e) => { if (e.key === 'Enter') addPlayer(); };
-
   // --- roles -------------------------------------------------------------
   if (!started && activeRoster().length >= 3) {
     const roles = el('div', 'card');
@@ -613,7 +553,6 @@ function viewClosed(main) {
         <button class="btn primary" id="btnDeal">${assigned ? 'Re-deal all roles' : 'Deal roles'}</button>
       </div>`;
     main.appendChild(roles);
-
     roles.querySelector('#btnDeal').onclick = async () => {
       if (assigned && !(await confirmAction('Re-deal every role?',
         'All current role assignments are replaced. Tokens, points and inventory are kept.'))) return;
@@ -626,7 +565,6 @@ function viewClosed(main) {
       toast('Roles dealt privately. Tell each player individually.');
     };
   }
-
   // --- last week ---------------------------------------------------------
   const lastRound = [...(S().rounds || [])].reverse()[0];
   if (lastRound) {
@@ -636,7 +574,6 @@ function viewClosed(main) {
       <p class="hint">${esc(lastRound.publicSummary || 'No public summary recorded.')}</p>`;
     main.appendChild(recap);
   }
-
   if (started) {
     const note2 = el('div', 'card');
     note2.innerHTML = `
@@ -646,9 +583,7 @@ function viewClosed(main) {
     main.appendChild(note2);
   }
 }
-
 /* --------------------------------------------------------- ATTENDANCE --- */
-
 function viewAttendance(main) {
   const card = el('div', 'card accent');
   card.innerHTML = `
@@ -661,7 +596,6 @@ function viewAttendance(main) {
     <table><thead><tr><th>Player</th><th>State</th><th style="width:210px">Attendance</th></tr></thead>
     <tbody id="attBody"></tbody></table>`;
   main.appendChild(card);
-
   const body = card.querySelector('#attBody');
   for (const p of activeRoster()) {
     const dead = p.lifeStatus === E.LIFE.SPIRIT;
@@ -677,10 +611,8 @@ function viewAttendance(main) {
     tr.querySelector('[data-out]').onclick = () => setAttendance(p.id, E.ATTENDANCE.DORMANT);
     body.appendChild(tr);
   }
-
   card.querySelector('#allIn').onclick = () => setAllAttendance(E.ATTENDANCE.PRESENT);
   card.querySelector('#allOut').onclick = () => setAllAttendance(E.ATTENDANCE.DORMANT);
-
   // --- resurrection ------------------------------------------------------
   const candidates = spirits().filter((p) => p.attendanceStatus === E.ATTENDANCE.PRESENT);
   const res = el('div', 'card private');
@@ -715,7 +647,6 @@ function viewAttendance(main) {
     res.appendChild(t);
   }
   main.appendChild(res);
-
   // --- late joiners ------------------------------------------------------
   const joiners = S().players.filter(
     (p) => E.isProfileActive(p) && p.joinedRound === S().game.currentRound && p.role === E.ROLE.CIVILIAN
@@ -743,7 +674,6 @@ function viewAttendance(main) {
     main.appendChild(lj);
   }
 }
-
 async function setAttendance(id, status) {
   await commit((d) => {
     d.players = d.players.map((p) => (p.id === id ? { ...p, attendanceStatus: status } : p));
@@ -755,7 +685,6 @@ async function setAttendance(id, status) {
     }
   });
 }
-
 async function setAllAttendance(status) {
   await commit((d) => {
     d.players = d.players.map((p) =>
@@ -763,9 +692,7 @@ async function setAllAttendance(status) {
     if (status === E.ATTENDANCE.DORMANT) { d.currentActions = []; d.currentBallots = []; }
   }, { eventType: 'ATTENDANCE_BULK', summary: `Everyone marked ${status.toLowerCase()}` });
 }
-
 /* ---------------------------------------------------- HIDDEN ACTIONS --- */
-
 function viewHiddenActions(main) {
   const intro = el('div', 'card accent');
   intro.innerHTML = `
@@ -774,13 +701,11 @@ function viewHiddenActions(main) {
     <div class="warnbox">Mafia submit from their own screen; Civilians have no night action.
       Anything below is a fallback — use it for anyone who cannot log in, and take it privately.</div>`;
   main.appendChild(intro);
-
   // Who is expected to submit something tonight.
   const actors = present().filter((p) => p.role === E.ROLE.MAFIA);
   const haveActions = new Set(
     (S().currentActions || []).filter((a) => a.targetId).map((a) => a.actorId));
   main.appendChild(liveBanner(actors, haveActions, 'action'));
-
   // --- Mafia -------------------------------------------------------------
   const mafia = present().filter((p) => p.role === E.ROLE.MAFIA);
   const mCard = el('div', 'card private');
@@ -802,7 +727,6 @@ function viewHiddenActions(main) {
       grid.appendChild(row);
     }
     mCard.appendChild(grid);
-
     const tally = {};
     for (const a of actionsOf(E.ACTION.MAFIA_KILL_VOTE)) if (a.targetId) tally[a.targetId] = (tally[a.targetId] || 0) + 1;
     const entries = Object.entries(tally).sort((a, b) => b[1] - a[1]);
@@ -813,7 +737,6 @@ function viewHiddenActions(main) {
   }
   main.appendChild(mCard);
 }
-
 function stageToggle(player, itemType) {
   const on = isStaged(player, itemType);
   const wrap = el('div', 'checkline');
@@ -828,7 +751,6 @@ function stageToggle(player, itemType) {
   wrap.append(cb, lab);
   return wrap;
 }
-
 /* Uses commitQuiet: this is a checkbox the admin is actively clicking, and a
    poll landing mid-write must not redraw it from state the write has not
    reached yet. Same class of bug as the winners table. */
@@ -851,7 +773,6 @@ async function toggleStage(playerId, itemType, on) {
   });
   render();
 }
-
 /*
   Anything the admin sets by hand is stamped ADMIN, and mergeActions() will
   not overwrite it. That matters for the very common case of correcting a
@@ -873,13 +794,10 @@ async function setAction(actorId, type, targetId, secondaryTargetId) {
     d.currentActions = list;
   });
 }
-
 /* -------------------------------------------------------- MINIGAME ----- */
-
 function viewMinigame(main) {
   const sel = S().currentMinigameId;
   const chosen = MINIGAMES.find((m) => m.id === sel);
-
   const card = el('div', 'card accent');
   card.innerHTML = `
     <h2>Minigame</h2>
@@ -892,7 +810,6 @@ function viewMinigame(main) {
       <span id="spinResult" class="badge out">No spin yet</span>
     </div>`;
   main.appendChild(card);
-
   card.querySelector('#spin').onclick = async () => {
     const pool = present().concat(spirits().filter((p) => p.attendanceStatus === E.ATTENDANCE.PRESENT));
     if (!pool.length) return toast('Nobody is present to spin for.', true);
@@ -904,7 +821,6 @@ function viewMinigame(main) {
       eventType: 'WHEEL_SPIN', summary: `Wheel selected ${nameOf(pick)} to choose the game`
     });
   };
-
   const lib = el('div', 'card');
   lib.innerHTML = `<h2>Library</h2>
     <p class="hint">Backup games are quick to start when you are running short on time.</p>`;
@@ -912,7 +828,7 @@ function viewMinigame(main) {
     <th></th><th style="width:100px"></th></tr></thead><tbody></tbody>`);
   const tb = table.querySelector('tbody');
   for (const m of MINIGAMES) {
-    const tr = el('tr', sel === m.id ? '' : '');
+    const tr = el('tr', '');
     tr.innerHTML = `
       <td><strong>${esc(m.name)}</strong><br><span class="faint">${esc(m.instructions)}</span></td>
       <td><span class="badge">${m.format === 'TEAM' ? 'Team' : 'Individual'}</span></td>
@@ -928,12 +844,9 @@ function viewMinigame(main) {
   lib.appendChild(table);
   main.appendChild(lib);
 }
-
 /* --------------------------------------------------------- REWARDS ----- */
-
 function viewRewards(main) {
   const winners = new Set(S().currentWinners || []);
-
   const card = el('div', 'card accent');
   card.innerHTML = `
     <h2>Record minigame winners</h2>
@@ -947,7 +860,6 @@ function viewRewards(main) {
       <button class="btn primary" id="award">Award tokens &amp; points</button>
     </div>`;
   main.appendChild(card);
-
   const body = card.querySelector('#wBody');
   const pool = activeRoster().filter((p) => p.attendanceStatus === E.ATTENDANCE.PRESENT);
   for (const p of pool) {
@@ -957,16 +869,13 @@ function viewRewards(main) {
       <td>${esc(p.displayName)}</td>
       <td>${dead ? '<span class="badge spirit">Spirit</span>' : '<span class="badge alive">Alive</span>'}</td>
       <td><input type="checkbox" ${winners.has(p.id) ? 'checked' : ''}></td>`;
-
     /*
       THE DOCTOR'S MISSING TOKEN.
-
       This handler used to fire store.commit() without awaiting it. The
       Rewards phase polls every 5 seconds, and a poll landing between the
       click and the write rebuilt this table from state the write had not
       reached - silently un-ticking the box. The admin saw a tick, pressed
       Award, and that player got nothing.
-
       commitQuiet() holds the `editing` latch for the duration of the write
       so the poll cannot redraw mid-flight, and the await means the state is
       committed before anything else can read it.
@@ -979,19 +888,16 @@ function viewRewards(main) {
     };
     body.appendChild(tr);
   }
-
   card.querySelector('#award').onclick = async () => {
     const ids = S().currentWinners || [];
     if (!ids.length) return toast('Select at least one winner.', true);
     if (S().currentRewardsPaid) return toast('Tokens already awarded this week.', true);
-
     /* Name everyone about to be paid. The failure mode here is silent - a
        missing tick pays nobody and says nothing - so the confirmation reads
        the list back before any token moves. */
     const names = ids.map(nameOf).join(', ');
     if (!(await confirmAction('Award tokens to these players?',
       `${names}. Anyone missing from that list gets nothing, and this can only be run once this week.`))) return;
-
     await commit((d) => {
       d.players = d.players.map((p) =>
         ids.includes(p.id) && p.lifeStatus === E.LIFE.ALIVE
@@ -1011,7 +917,6 @@ function viewRewards(main) {
     });
     toast('Tokens and Spirit Points allocated.');
   };
-
   // --- purchases ---------------------------------------------------------
   const buy = el('div', 'card private');
   buy.innerHTML = `
@@ -1029,7 +934,6 @@ function viewRewards(main) {
     </div>
     <p class="faint" id="buyHint"></p>`;
   main.appendChild(buy);
-
   const who = buy.querySelector('#buyWho');
   const what = buy.querySelector('#buyWhat');
   const hint = buy.querySelector('#buyHint');
@@ -1045,13 +949,10 @@ function viewRewards(main) {
     hint.textContent = i ? ITEM_HINT[i] : '';
   };
   buy.querySelector('#buyGo').onclick = () => purchase(who.value, what.value);
-
   purchaseQueue(main);
 }
-
 /*
   Requests players made from their own screen.
-
   A request is not a purchase. The design overview is explicit that a token is
   removed only after a valid purchase is accepted, so acceptance runs through
   the same engine.canPurchase and the same purchase() path as anything typed
@@ -1061,7 +962,6 @@ function viewRewards(main) {
 */
 function purchaseQueue(main) {
   if (!live) return;
-
   const card = el('div', 'card private');
   card.innerHTML = `
     <h2>Purchase requests
@@ -1069,24 +969,20 @@ function purchaseQueue(main) {
         ? `<span class="badge dormant">${pendingPurchases.length} waiting</span>` : ''}</h2>
     <p class="hint">Sent privately from each player's screen. Nothing is charged until you
       accept, and the same rules are checked either way.</p>`;
-
   if (!pendingPurchases.length) {
     card.appendChild(el('p', 'empty', 'No requests waiting.'));
     main.appendChild(card);
     return;
   }
-
   const table = el('table', '', `<thead><tr>
     <th>Player</th><th>Reward</th><th class="num">Tokens</th><th style="width:180px"></th>
   </tr></thead><tbody></tbody>`);
   const tb = table.querySelector('tbody');
-
   for (const req of pendingPurchases) {
     const p = byId(req.playerId);
     const check = p
       ? E.canPurchase(p, req.rewardType, S().players, settings())
       : { ok: false, reason: 'No longer on the roster' };
-
     const tr = el('tr');
     tr.innerHTML = `
       <td>${esc(p ? p.displayName : 'Unknown')}</td>
@@ -1097,14 +993,12 @@ function purchaseQueue(main) {
         <button class="btn sm ${check.ok ? 'primary' : ''}" ${check.ok ? '' : 'disabled'} data-yes>Accept</button>
         <button class="btn sm ghost" data-no>Reject</button>
       </td>`;
-
     tr.querySelector('[data-yes]').onclick = async () => {
       await purchase(req.playerId, req.rewardType);
       await live.decidePurchase(req.id, 'ACCEPTED');
       pendingPurchases = pendingPurchases.filter((x) => x.id !== req.id);
       render();
     };
-
     tr.querySelector('[data-no]').onclick = async () => {
       await live.decidePurchase(req.id, 'REJECTED',
         check.ok ? 'Declined by admin' : check.reason);
@@ -1115,21 +1009,17 @@ function purchaseQueue(main) {
         summary: `${p ? p.displayName : 'Unknown'} was refused ${ITEM_LABEL[req.rewardType] ?? req.rewardType}`
       });
     };
-
     tb.appendChild(tr);
   }
-
   card.appendChild(table);
   main.appendChild(card);
 }
-
 async function purchase(playerId, itemType) {
   const p = byId(playerId);
   if (!p || !itemType) return toast('Select a player and a reward.', true);
   const check = E.canPurchase(p, itemType, S().players, settings());
   if (!check.ok) return toast(check.reason, true);
   const round = S().game.currentRound;
-
   if (itemType === E.ITEM.RECRUIT_NEW_MAFIA) {
     return openModal(`
       <h2>Recruit new Mafia</h2>
@@ -1159,7 +1049,6 @@ async function purchase(playerId, itemType) {
       };
     });
   }
-
   await commit((d) => {
     d.players = d.players.map((x) => {
       if (x.id !== playerId) return x;
@@ -1171,12 +1060,9 @@ async function purchase(playerId, itemType) {
        summary: `${p.displayName} purchased ${ITEM_LABEL[itemType]}` });
   toast(`${ITEM_LABEL[itemType]} purchased. Usable from week ${round + 1}.`);
 }
-
 /* ------------------------------------------------------ RESOLUTION ----- */
-
 function viewResolution(main) {
   const pending = S().pendingPublicEvent;
-
   if (!pending) {
     const card = el('div', 'card accent');
     card.innerHTML = `
@@ -1186,7 +1072,6 @@ function viewResolution(main) {
       <div class="btn-row"><button class="btn primary" id="prev">Preview resolution</button></div>
       <div id="previewBox"></div>`;
     main.appendChild(card);
-
     card.querySelector('#prev').onclick = () => {
       const res = E.resolveHiddenActions(S(), rngFor('resolve'));
       const box = card.querySelector('#previewBox');
@@ -1208,7 +1093,6 @@ function viewResolution(main) {
     };
     return;
   }
-
   // Already published
   const card = el('div', 'card');
   card.innerHTML = `<h2>Published</h2>`;
@@ -1222,16 +1106,13 @@ function viewResolution(main) {
     'Advance to Discuss & vote when ready.'));
   main.appendChild(card);
 }
-
 async function publishResolution(res) {
   await commit((d) => {
     d.pendingPublicEvent = res.publicEvent;
     d.privateEvents = [...(d.privateEvents || []), ...res.privateEvents];
-
     if (res.death) {
       d.players = E.killPlayer(d.players, res.death);
     }
-
     // Consume staged and expiring items.
     const round = d.game.currentRound;
     d.players = d.players.map((p) => ({
@@ -1245,7 +1126,6 @@ async function publishResolution(res) {
     summary: res.publicEvent.text,
     trackDiff: true
   });
-
   /* Delivers anything addressed to one player to their own screen. With the
      Sheriff retired the engine produces none, but the path is kept so a
      future private result needs no plumbing. */
@@ -1255,37 +1135,44 @@ async function publishResolution(res) {
       toast('Private results could not be delivered online — read them out instead.', true);
     }
   }
-
   // Legacy may fire if that death removed the last Mafia.
   await runLegacyAndEndgame();
 }
-
 async function runLegacyAndEndgame() {
   const legacy = E.checkMafiaLegacy(S(), rngFor('legacy'));
   if (legacy.triggered) {
     await commit((d) => { d.players = legacy.players; d.game = { ...d.game, legacyUsed: true }; },
       { eventType: 'MAFIA_LEGACY',
         summary: `Mafia Legacy triggered — a new Mafia was chosen`, trackDiff: true });
-    openModal(`
+    /* Wait for this to be closed, so the endgame prompt below cannot wipe it. */
+    await new Promise((resolve) => openModal(`
       <h2>Mafia Legacy has triggered</h2>
       <p class="hint">The last Mafia was eliminated, so one Civilian has been converted.
         This can only ever happen once.</p>
       <div class="warnbox">Tell <strong>${esc(nameOf(legacy.chosenId))}</strong> privately
         that they are now Mafia. Announce nothing publicly.</div>
       <div class="btn-row"><button class="btn primary" data-ok>Understood</button></div>`,
-      (root, close) => { root.querySelector('[data-ok]').onclick = close; });
+      (root, close) => { root.querySelector('[data-ok]').onclick = () => { close(); resolve(); }; }));
   }
-
+  /* CONTINGENCY: the game never ends by itself. The admin is shown the
+     numbers and decides. Cancel keeps playing; this is asked again after
+     the next death or override. */
   const end = E.checkEndgame(S());
-  if (end.finished) {
-    await commit((d) => {
-      d.game = { ...d.game, status: E.PHASE.FINISHED, winner: end.winner };
-    }, { eventType: 'GAME_FINISHED', summary: `${end.winner} wins — ${end.reason}`, trackDiff: true });
+  if (!end.finished) return;
+  const ok = await confirmAction(
+    `End the game? ${end.winner === 'GOOD' ? 'The town' : 'The Mafia'} would win.`,
+    `${end.reason}. Living players (absent included): ${end.activeMafia} Mafia vs ${end.activeGood} others. ` +
+    'Press Cancel to keep playing — you will be asked again after the next death.');
+  if (!ok) {
+    await commit(() => {}, { eventType: 'ENDGAME_DEFERRED',
+      summary: `Endgame condition met (${end.reason}) — admin chose to keep playing` });
+    return toast('Game continues. Nothing was ended.');
   }
+  await commit((d) => {
+    d.game = { ...d.game, status: E.PHASE.FINISHED, winner: end.winner, finishedFrom: S().game.status };
+  }, { eventType: 'GAME_FINISHED', summary: `${end.winner} wins — ${end.reason}`, trackDiff: true });
 }
-
 /* ---------------------------------------------------------- MASTER ----- */
-
 function viewMaster(main) {
   if (!settings().masterEnabled) {
     main.appendChild(el('div', 'card', `<h2>Master not in play</h2>
@@ -1348,7 +1235,6 @@ function viewMaster(main) {
     toast('Master awards confirmed and announced.');
   };
 }
-
 /* -------------------------------------------------- DISCUSS & VOTE ----- */
 /*
   One phase, one clock. Everyone talks and votes whenever they are ready.
@@ -1357,20 +1243,15 @@ function viewMaster(main) {
     running: { round, endsAt: ISO time, remaining }
     paused:  { round, endsAt: null,     remaining: seconds left }
 */
-
 let clockHandle = null;
-
 const voteSeconds = () => Math.max(60, Math.round((Number(settings().voteMinutes) || 5) * 60));
-
 function timerLeft(t = S().voteTimer) {
   if (!t || t.round !== S().game.currentRound) return voteSeconds();
   if (t.endsAt) return Math.max(0, Math.ceil((Date.parse(t.endsAt) - Date.now()) / 1000));
   return Math.max(0, t.remaining ?? voteSeconds());
 }
-
 const fmtClock = (sec) =>
   `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
-
 async function setVoteTimer({ endsAt = null, remaining }) {
   const round = S().game.currentRound;
   const t = { round, endsAt, remaining };
@@ -1380,7 +1261,6 @@ async function setVoteTimer({ endsAt = null, remaining }) {
     if (!r.ok) toast(`Timer not shared with players (${r.reason}). Run voting.sql in Supabase.`, true);
   }
 }
-
 const startVoteTimer = (secs = timerLeft()) =>
   setVoteTimer({ endsAt: new Date(Date.now() + secs * 1000).toISOString(), remaining: secs });
 const pauseVoteTimer = () => setVoteTimer({ endsAt: null, remaining: timerLeft() });
@@ -1390,14 +1270,12 @@ const addVoteTime = (secs) => {
   const left = timerLeft() + secs;
   return t?.endsAt ? startVoteTimer(left) : setVoteTimer({ endsAt: null, remaining: left });
 };
-
 /** Weight a ballot really carries. Shown to the admin only. */
 const ballotWeight = (voterId) => {
   const p = byId(voterId);
   return 1 + (p && isStaged(p, E.ITEM.EXTRA_VOTE) ? 1 : 0)
            + (E.masterDoubleVoteIds(S().currentMaster).includes(voterId) ? 1 : 0);
 };
-
 /**
  * The Among Us style board: one tile per player who can be voted for, with
  * the names of everyone voting for them stacked underneath. Players see the
@@ -1413,7 +1291,6 @@ function voteBoard(ballots, candidates, { title = 'Vote board', final = false, o
   }
   const voted = new Set(ballots.map((b) => b.voterId));
   const top = Math.max(0, ...[...byTarget.values()].map((v) => v.length));
-
   card.innerHTML = `
     <h2>${esc(title)}
       <span class="badge ${voted.size >= candidates.length ? 'alive' : 'dormant'}">${voted.size} of ${candidates.length} voted</span></h2>
@@ -1441,14 +1318,12 @@ function voteBoard(ballots, candidates, { title = 'Vote board', final = false, o
     }).join('')}</div>`;
   return card;
 }
-
 function viewVoting(main) {
   const ballots = S().currentBallots || [];
   const voters = present();
   const t = S().voteTimer?.round === S().game.currentRound ? S().voteTimer : null;
   const running = !!t?.endsAt;
   const left = timerLeft();
-
   // --- clock ---------------------------------------------------------------
   const clock = el('div', 'card accent');
   clock.innerHTML = `
@@ -1466,14 +1341,12 @@ function viewVoting(main) {
       <button class="btn ghost" id="tReset">Reset to ${fmtClock(voteSeconds())}</button>
     </div>`;
   main.appendChild(clock);
-
   clock.querySelector('#tAdd').onclick = async () => { await addVoteTime(60); render(); };
   clock.querySelector('#tReset').onclick = async () => { await resetVoteTimer(); render(); };
   const startBtn = clock.querySelector('#tStart');
   if (startBtn) startBtn.onclick = async () => { await startVoteTimer(); render(); };
   const pauseBtn = clock.querySelector('#tPause');
   if (pauseBtn) pauseBtn.onclick = async () => { await pauseVoteTimer(); render(); };
-
   if (running) {
     let warned = left === 0;
     clockHandle = setInterval(() => {
@@ -1489,11 +1362,9 @@ function viewVoting(main) {
       }
     }, 500);
   }
-
   // --- who is still to vote, then the board -------------------------------
   main.appendChild(liveBanner(voters, new Set(ballots.map((b) => b.voterId)), 'vote'));
   main.appendChild(voteBoard(ballots, voters));
-
   // --- admin entry / correction -------------------------------------------
   const card = el('div', 'card private');
   card.innerHTML = `
@@ -1503,7 +1374,6 @@ function viewVoting(main) {
       : 'Offline mode — every vote is entered here.'}</p>
     <div class="action-grid" id="vGrid"></div>`;
   main.appendChild(card);
-
   const grid = card.querySelector('#vGrid');
   for (const v of voters) {
     const cur = ballots.find((b) => b.voterId === v.id);
@@ -1516,12 +1386,10 @@ function viewVoting(main) {
       <span class="badge ${cur ? 'alive' : 'out'}">${sourceLabel(cur, 'Cast')}</span>`;
     row.querySelector('select').onchange = (e) => setBallot(v.id, e.target.value);
     grid.appendChild(row);
-
     if (ownsUsable(v, E.ITEM.EXTRA_VOTE) || extra) {
       grid.appendChild(stageToggle(v, E.ITEM.EXTRA_VOTE));
     }
   }
-
   // --- vote manipulation (unchanged) --------------------------------------
   const mafiaWithVM = present().filter(
     (p) => p.role === E.ROLE.MAFIA && (ownsUsable(p, E.ITEM.VOTE_MANIPULATION) || isStaged(p, E.ITEM.VOTE_MANIPULATION)));
@@ -1544,7 +1412,6 @@ function viewVoting(main) {
     });
     t2.onchange = save; d.onchange = save;
   }
-
   // --- tally ---------------------------------------------------------------
   const go = el('div', 'card');
   go.innerHTML = `<div class="btn-row" style="margin:0">
@@ -1552,7 +1419,6 @@ function viewVoting(main) {
     <p class="faint" style="margin-top:10px">${ballots.length} of ${voters.length} votes in.
       Tallying ends the phase and applies vote weights and manipulation.</p>`;
   main.appendChild(go);
-
   go.querySelector('#tally').onclick = async () => {
     /* One last sync before the tally. A vote cast between the last poll and
        this click would otherwise be left out of a count that cannot re-run. */
@@ -1562,7 +1428,6 @@ function viewVoting(main) {
     const missing = voters.length - finalBallots.length;
     if (missing > 0 && !(await confirmAction(`Tally with ${missing} vote(s) missing?`,
       'Anyone who has not voted is counted as abstaining. You can rewind afterwards, but the result is recorded now.'))) return;
-
     const res = E.resolveVote(S(), finalBallots, S().currentMaster || {}, S().currentManipulation);
     await commit((d) => {
       d.currentVoteResult = res;
@@ -1572,7 +1437,6 @@ function viewVoting(main) {
     if (live) live.pushVoteTimer(S().game.currentRound, { endsAt: null, remaining: 0 });
   };
 }
-
 /*
   Online, an admin vote is written to the ballots table like any other, so
   the board on every screen shows it and the tally counts it. Offline it
@@ -1595,9 +1459,7 @@ async function setBallot(voterId, targetId) {
     d.currentBallots = list;
   });
 }
-
 /* --------------------------------------------------------- RESULTS ----- */
-
 function viewResults(main) {
   const res = S().currentVoteResult;
   if (!res) {
@@ -1605,7 +1467,6 @@ function viewResults(main) {
       <p class="hint">Rewind to the voting phase to enter ballots.</p>`));
     return;
   }
-
   const card = el('div', 'card');
   card.innerHTML = '<h2>Vote result</h2>';
   const rev = el('div', 'reveal ' + (res.eliminated ? 'death' : 'safe'), `
@@ -1617,7 +1478,6 @@ function viewResults(main) {
       ? `They were <strong>${esc(roleLabel(res.revealedRole))}</strong> — every player's screen shows this now.`
       : res.tie ? 'The vote was tied.' : 'No eligible target.'}</div>`);
   card.appendChild(rev);
-
   const rows = Object.entries(res.totals).sort((a, b) => b[1] - a[1]);
   if (rows.length) {
     const t = el('table', '', `<thead><tr><th>Player</th><th class="num">Votes</th><th></th></tr></thead>
@@ -1628,7 +1488,6 @@ function viewResults(main) {
     card.appendChild(t);
   }
   main.appendChild(card);
-
   /* Keep the voted-out player on the board after Apply elimination turns them
      into a Spirit, so their tile and role tag do not vanish. */
   const outP = res.eliminated ? byId(res.eliminated) : null;
@@ -1640,17 +1499,15 @@ function viewResults(main) {
   if (res.eliminated && byId(res.eliminated)?.lifeStatus === E.LIFE.ALIVE) {
     const apply = el('div', 'card accent');
     apply.innerHTML = `<h2>Apply the elimination</h2>
-      <p class="hint">This commits the death and checks Legacy and victory.</p>
+      <p class="hint">This commits the death and checks Legacy and victory. You will be asked before the game ends.</p>
       <div class="btn-row"><button class="btn primary" id="applyEl">Apply elimination</button></div>`;
     main.appendChild(apply);
-
     apply.querySelector('#applyEl').onclick = async () => {
       await commit((d) => {
         d.players = E.killPlayer(d.players, res.eliminated);
       }, { eventType: 'ELIMINATION',
            summary: `${nameOf(res.eliminated)} was voted out (${roleLabel(res.revealedRole)})`,
            trackDiff: true });
-
       await runLegacyAndEndgame();
     };
   } else {
@@ -1658,9 +1515,7 @@ function viewResults(main) {
       <p class="hint">Use <strong>Close session</strong> in the sidebar. Balances and roles persist.</p>`));
   }
 }
-
 /* -------------------------------------------------------- FINISHED ----- */
-
 function viewFinished(main) {
   const g = S().game;
   const card = el('div', 'card');
@@ -1670,7 +1525,6 @@ function viewFinished(main) {
     <div class="headline">${g.winner === 'GOOD' ? 'The town wins' : 'The Mafia win'}</div>
     <div class="detail">After ${g.currentRound} week${g.currentRound === 1 ? '' : 's'}.</div>`));
   main.appendChild(card);
-
   const reveal = el('div', 'card');
   reveal.innerHTML = `<h2>Full reveal</h2>
     <table><thead><tr><th>Player</th><th>Final role</th><th>State</th>
@@ -1682,7 +1536,28 @@ function viewFinished(main) {
         <td class="num tokens">${p.rewardTokens}</td>
       </tr>`).join('')}</tbody></table>`;
   main.appendChild(reveal);
-
+  /* Resume a game that ended by mistake. Changes only the phase and the
+     winner - roles, tokens, Spirits and items are untouched. */
+  const guess = g.finishedFrom && g.finishedFrom !== E.PHASE.FINISHED ? g.finishedFrom
+    : S().currentVoteResult ? E.PHASE.RESULTS
+    : S().pendingPublicEvent ? E.PHASE.VOTING : E.PHASE.CLOSED;
+  const resume = el('div', 'card accent');
+  resume.innerHTML = `<h2>Resume this game</h2>
+    <p class="hint">Ended too early? Put the game back where it stopped. Nothing else changes.</p>
+    <label class="field"><span>Resume into</span><select id="resPhase">${
+      [E.PHASE.CLOSED, E.PHASE.RESOLUTION, E.PHASE.VOTING, E.PHASE.RESULTS].map((p) =>
+        `<option value="${p}"${p === guess ? ' selected' : ''}>${esc(PHASE_LABEL[p])}</option>`).join('')
+    }</select></label>
+    <div class="btn-row"><button class="btn primary" id="resGo">Resume game</button></div>`;
+  main.appendChild(resume);
+  resume.querySelector('#resGo').onclick = async () => {
+    const to = resume.querySelector('#resPhase').value;
+    if (!(await confirmAction(`Resume week ${g.currentRound} in ${PHASE_LABEL[to]}?`,
+      'The Game over screen disappears for every player. Roles and balances are kept.'))) return;
+    await commit((d) => { d.game = { ...d.game, status: to, winner: null, finishedFrom: null }; },
+      { eventType: 'GAME_RESUMED', summary: `Game resumed in ${PHASE_LABEL[to]}`, trackDiff: true });
+    toast('Game resumed.');
+  };
   const again = el('div', 'card danger');
   again.innerHTML = `<h2>Start a new game</h2>
     <p class="hint">Keep the same players and logins, or wipe everything.</p>
@@ -1690,12 +1565,9 @@ function viewFinished(main) {
   main.appendChild(again);
   again.querySelector('#reset').onclick = openResetPanel;
 }
-
 /* ==================================================== PHASE CONTROL ==== */
-
 async function advancePhase() {
   const g = S().game;
-
   if (g.status === E.PHASE.CLOSED) {
     if (activeRoster().length < 3) return toast('Add players before opening a session.', true);
     await commit((d) => {
@@ -1715,7 +1587,6 @@ async function advancePhase() {
         d.game.roundsRemaining = Math.max(0, d.game.roundsRemaining - 1);
       }
     }, { eventType: 'SESSION_OPENED', summary: `Week ${g.currentRound + 1} opened` });
-
     /* Wipe any submissions sitting against this week number. Without this, a
        rewound-and-reopened week would read last week's choices as this week's
        intent — the quietest possible way to kill the wrong person. */
@@ -1725,12 +1596,10 @@ async function advancePhase() {
     }
     return;
   }
-
   if (g.status === E.PHASE.RESULTS) {
     await closeSession();
     return;
   }
-
   // Guard rails — warn, but never block the admin.
   if (g.status === E.PHASE.MASTER && settings().masterEnabled && !S().currentMaster?.confirmed) {
     if (!(await confirmAction('Advance without confirming awards?',
@@ -1740,18 +1609,15 @@ async function advancePhase() {
     if (!(await confirmAction('Advance without publishing?',
       'No resolution has been published this week. The death or no-death result will be skipped.'))) return;
   }
-
   if (g.status === E.PHASE.REWARDS && !S().currentRewardsPaid && (S().currentWinners || []).length) {
     if (!(await confirmAction('Advance without awarding tokens?',
       'Winners are ticked but Award tokens & points has not been pressed. Nobody has been paid.'))) return;
   }
-
   await commit((d) => {
     let next = E.nextPhase(d.game.status);
     if (next === E.PHASE.MASTER && !settings().masterEnabled) next = E.PHASE.REWARDS;
     d.game.status = next;
   });
-
   /* Entering Discuss & vote starts the clock on every screen. Only the first
      time this week - rewinding and coming back leaves it as it was. */
   if (S().game.status === E.PHASE.VOTING &&
@@ -1760,7 +1626,6 @@ async function advancePhase() {
     render();
   }
 }
-
 async function closeSession() {
   const res = S().currentVoteResult;
   const pub = S().pendingPublicEvent;
@@ -1769,7 +1634,6 @@ async function closeSession() {
     res?.eliminated ? `${nameOf(res.eliminated)} was voted out (${roleLabel(res.revealedRole)}).`
       : res ? 'The vote produced no elimination.' : null
   ].filter(Boolean).join(' ');
-
   await commit((d) => {
     d.rounds = [...(d.rounds || []), {
       number: d.game.currentRound,
@@ -1788,10 +1652,8 @@ async function closeSession() {
     d.voteTimer = null;
     d.currentMaster = E.blankMasterAwards();
   }, { eventType: 'SESSION_CLOSED', summary: `Week ${S().game.currentRound} closed` });
-
   toast('Session closed. Nothing will change until you open the next one.');
 }
-
 async function rewindPhase() {
   if (!(await confirmAction('Rewind a phase?',
     'Data already entered is kept, but anything published stays published.'))) return;
@@ -1801,14 +1663,11 @@ async function rewindPhase() {
     d.game.status = prior;
   }, { eventType: 'PHASE_REWIND', summary: 'Admin rewound a phase' });
 }
-
 /* ================================================ PLAYER OVERRIDES ===== */
-
 function openPlayerModal(id) {
   const p = byId(id);
   if (!p) return;
   const inv = (p.inventory || []).filter((i) => i.status !== 'USED');
-
   openModal(`
     <h2>${esc(p.displayName)}</h2>
     <p class="hint">Manual override. A reason is recorded in the audit log.</p>
@@ -1879,7 +1738,6 @@ function openPlayerModal(id) {
       const sp = Math.max(0, Number(root.querySelector('#mSp').value) || 0);
       const why = root.querySelector('#mWhy').value.trim();
       if (!why) return toast('Give a reason — it goes in the audit log.', true);
-
       await commit((d) => {
         d.players = d.players.map((x) => x.id === id ? {
           ...x, role, alignment: E.alignmentOf(role),
@@ -1894,16 +1752,13 @@ function openPlayerModal(id) {
     };
   });
 }
-
 /* ======================================================== SETTINGS ===== */
-
 function openSettings() {
   const s = settings();
   const g = S().game;
   const numeric = ['spiritPointsAttendance',
     'spiritPointsMinigameWin', 'resurrectionCost', 'resurrectionDiscountedCost',
     'maxActiveMafiaFromRecruit', 'voteMinutes'];
-
   openModal(`
     <h2>Settings</h2>
     <p class="hint">Defaults follow the design document. Change these only deliberately.</p>
@@ -1943,7 +1798,6 @@ function openSettings() {
       const cdOn = root.querySelector('#cdOn').checked;
       const cdN = Number(root.querySelector('#cdN').value) || 0;
       const cdLeg = root.querySelector('#cdLeg').checked;
-
       await commit((d) => {
         d.game.settings = { ...d.game.settings, ...next };
         d.game.countdownEnabled = cdOn;
@@ -1955,9 +1809,7 @@ function openSettings() {
     };
   });
 }
-
 /* ========================================================== BACKUP ===== */
-
 function openBackup() {
   openModal(`
     <h2>Backup &amp; restore</h2>
@@ -1986,7 +1838,6 @@ function openBackup() {
     const say = (html, bad) => {
       msg.innerHTML = `<div class="${bad ? 'warnbox' : 'okbox'}">${html}</div>`;
     };
-
     /* Serialising the game is the one thing every backup path depends on, so
        it is done ONCE, up front, and its failure is reported plainly. A blank
        textarea with no explanation is what made this panel look like three
@@ -1996,7 +1847,6 @@ function openBackup() {
       if (!json) throw new Error('The game produced no data to export.');
       return json;
     };
-
     const showText = (reason) => {
       let json;
       try {
@@ -2018,7 +1868,6 @@ function openBackup() {
       ta.focus();
       ta.select();
     };
-
     // --- download --------------------------------------------------------
     root.querySelector('#bDown').onclick = () => {
       try {
@@ -2043,7 +1892,6 @@ function openBackup() {
         showText(`Download failed — ${err.message}`);
       }
     };
-
     // --- clipboard -------------------------------------------------------
     root.querySelector('#bCopy').onclick = async () => {
       try {
@@ -2053,9 +1901,7 @@ function openBackup() {
         showText(`Clipboard copy failed — ${err.message}`);
       }
     };
-
     root.querySelector('#bShow').onclick = () => showText('');
-
     // --- restore from a file --------------------------------------------
     const fileInput = root.querySelector('#bFile');
     root.querySelector('#bPick').onclick = () => fileInput.click();
@@ -2067,14 +1913,12 @@ function openBackup() {
       reader.onerror = () => say('Could not read that file.', true);
       reader.readAsText(f);
     };
-
     // --- restore from pasted text ---------------------------------------
     root.querySelector('#bRestore').onclick = () => {
       const text = root.querySelector('#bPaste').value.trim();
       if (!text) return say('Paste a backup, or choose a file above.', true);
       doRestore(text, 'pasted text');
     };
-
     /* Two-step inline confirm. A nested modal would wipe this one, which is
        what broke the original restore path. */
     let armed = null;
@@ -2088,11 +1932,9 @@ function openBackup() {
       if (!parsed || !parsed.game || !Array.isArray(parsed.players)) {
         return say('Readable, but not a Weekly Mafia backup.', true);
       }
-
       const when = parsed.game.createdAt
         ? new Date(parsed.game.createdAt).toLocaleDateString() : 'unknown date';
       const label = `week ${parsed.game.currentRound ?? '?'}, ${parsed.players.length} players`;
-
       if (armed !== text) {
         armed = text;
         msg.innerHTML = `
@@ -2108,7 +1950,6 @@ function openBackup() {
         msg.querySelector('#bNo').onclick = () => { armed = null; msg.innerHTML = ''; };
         return;
       }
-
       try {
         await store.importJson(parsed);
         close();
@@ -2121,21 +1962,16 @@ function openBackup() {
     }
   });
 }
-
 /* ============================================================ BOOT ===== */
-
 $('btnNext').onclick = advancePhase;
 $('btnBack').onclick = rewindPhase;
 $('btnSettings').onclick = openSettings;
 $('btnBackup').onclick = openBackup;
 $('btnReset').onclick = openResetPanel;
-
 /* A failed write used to be logged to the console and nowhere else, so the
    admin could keep running a session that was never reaching localStorage.
    Now it surfaces immediately. */
 store.onError = (message) => toast(message, true);
-
 mountStorageButton(mode, sb);
-
 await store.init();
 render();
