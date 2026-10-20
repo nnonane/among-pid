@@ -1,4 +1,17 @@
-/* mafia v1.4 | ui.js | 21 Oct 2026 */
+/* mafia v1.5 | ui.js | 21 Oct 2026 */
+/*
+  v1.5 ADMIN CONTROL OVER ITEMS AND MASTER AWARDS.
+  Click any player in the roster:
+    - every item they hold (including used ones this week) can be made
+      active now, pushed to next week, marked used, or removed (with or
+      without refunding the token)
+    - any item can be given to them, free or for a token
+    - any Master award they hold can be revoked
+  Master awards are no longer locked forever once confirmed. A Master
+  awards card in the Master and Discuss & vote phases can revoke one award
+  or unlock them all for editing. A revoked or unlocked +1 token prize takes
+  the token back. Every change is logged and goes to every screen at once.
+*/
 /*
   Rendering and admin controls. Talks to store.js and engine.js only.
   Contains NO game rules — anything that decides an outcome lives in engine.js.
@@ -1231,6 +1244,147 @@ async function runLegacyAndEndgame() {
   }, { eventType: 'GAME_FINISHED', summary: `${end.winner} wins — ${end.reason}`, trackDiff: true });
 }
 /* ---------------------------------------------------------- MASTER ----- */
+/* ============================================ ADMIN ITEM / AWARD EDITS == */
+/* After any change to items or awards, re-publish this week's Sabotage so
+   every screen agrees (immunity added or removed can change it). */
+function afterItemEdit(d) {
+  if (d.game.status === E.PHASE.VOTING || d.game.status === E.PHASE.RESULTS) publishSabotage(d);
+}
+
+const itemStateLabel = (i) => {
+  const r = S().game.currentRound;
+  if (i.status === 'USED') return { cls: 'out', txt: `Used${i.usedRound ? ` (week ${i.usedRound})` : ''}` };
+  if (i.status === 'STAGED') return { cls: 'dormant', txt: 'In use this week' };
+  if (i.expiresRound != null && i.expiresRound < r) return { cls: 'out', txt: `Expired after week ${i.expiresRound}` };
+  if (i.eligibleFromRound != null && i.eligibleFromRound > r) return { cls: 'dormant', txt: `Starts week ${i.eligibleFromRound}` };
+  return { cls: 'alive', txt: i.expiresRound != null ? 'Active this week' : 'Ready' };
+};
+
+/** Changes one inventory item. kind: NOW | NEXT | USED | REMOVE. */
+async function editItem(playerId, itemId, kind, refund = false) {
+  const p = byId(playerId);
+  const item = (p?.inventory || []).find((i) => i.id === itemId);
+  if (!p || !item) return toast('That item no longer exists.', true);
+  const r = S().game.currentRound;
+  const label = ITEM_LABEL[item.rewardType] ?? item.rewardType;
+  const summary = {
+    NOW: `${label} made active this week for ${p.displayName}`,
+    NEXT: `${label} for ${p.displayName} pushed to week ${r + 1}`,
+    USED: `${label} for ${p.displayName} marked as used`,
+    REMOVE: `${label} removed from ${p.displayName}${refund ? ' (token refunded)' : ''}`
+  }[kind];
+  await commit((d) => {
+    d.players = d.players.map((x) => {
+      if (x.id !== playerId) return x;
+      let inv = [...(x.inventory || [])];
+      const at = inv.findIndex((i) => i.id === itemId);
+      if (at < 0) return x;
+      const it = inv[at];
+      const once = it.rewardType === E.ITEM.TEMP_IMMUNITY;   // immunity lasts one week
+      if (kind === 'REMOVE') inv.splice(at, 1);
+      if (kind === 'NOW') inv[at] = { ...it, status: 'OWNED', stagedRound: null, usedRound: null,
+        eligibleFromRound: r, expiresRound: once ? r : null };
+      if (kind === 'NEXT') inv[at] = { ...it, status: 'OWNED', stagedRound: null, usedRound: null,
+        eligibleFromRound: r + 1, expiresRound: once ? r + 1 : null };
+      if (kind === 'USED') inv[at] = { ...it, status: 'USED', stagedRound: null, usedRound: r };
+      return { ...x, inventory: inv,
+        rewardTokens: (x.rewardTokens || 0) + (kind === 'REMOVE' && refund ? 1 : 0) };
+    });
+    afterItemEdit(d);
+  }, { eventType: 'ITEM_EDITED', actorId: playerId, summary, trackDiff: true });
+  toast(summary + '.');
+}
+
+/** Gives an item directly. Bypasses shop rules - the admin decides. */
+async function grantItem(playerId, itemType, { charge = false, when = 'NOW', targetId = null } = {}) {
+  const p = byId(playerId);
+  if (!p || !itemType) return toast('Pick an item.', true);
+  if (itemType === E.ITEM.SABOTAGE && !targetId) return toast('Pick who the Sabotage is aimed at.', true);
+  if (charge && p.rewardTokens < 1) return toast(`${p.displayName} has no token to pay with.`, true);
+  const r = S().game.currentRound;
+  const once = itemType === E.ITEM.TEMP_IMMUNITY;
+  const start = when === 'NOW' ? r : r + 1;
+  const item = { ...newInventoryItem(itemType, r, targetId), eligibleFromRound: start, expiresRound: once ? start : null };
+  const label = ITEM_LABEL[itemType] ?? itemType;
+  const summary = `${p.displayName} was given ${label}${targetId ? ` on ${nameOf(targetId)}` : ''}${
+    charge ? ' for 1 token' : ' free'} (${when === 'NOW' ? 'this week' : `from week ${start}`})`;
+  await commit((d) => {
+    d.players = d.players.map((x) => x.id !== playerId ? x : {
+      ...x, inventory: [...(x.inventory || []), item],
+      rewardTokens: (x.rewardTokens || 0) - (charge ? 1 : 0)
+    });
+    afterItemEdit(d);
+  }, { eventType: 'ITEM_GRANTED', actorId: playerId, summary, trackDiff: true });
+  toast(summary + '.');
+}
+
+/** Takes one confirmed Master award away. A paid +1 token is taken back. */
+async function revokeAward(key) {
+  const m = S().currentMaster || E.blankMasterAwards();
+  const a = (m.awards || []).find((x) => x.key === key);
+  if (!a || !a.playerId) return;
+  const paid = (m.paidAwardKeys || []).includes(key);
+  const who = nameOf(a.playerId);
+  if (!(await confirmAction(`Revoke ${a.title} from ${who}?`,
+    a.prize === 'TOKEN'
+      ? (paid ? 'The +1 token they were paid is taken back (never below 0).' : 'No token was paid yet.')
+      : 'Their double vote stops counting straight away, on every screen.'))) return;
+  await commit((d) => {
+    const cm = d.currentMaster || E.blankMasterAwards();
+    if (paid && a.prize === 'TOKEN') {
+      d.players = d.players.map((x) => x.id === a.playerId
+        ? { ...x, rewardTokens: Math.max(0, (x.rewardTokens || 0) - 1) } : x);
+    }
+    d.currentMaster = { ...cm,
+      awards: cm.awards.map((x) => x.key === key ? { ...x, playerId: null } : x),
+      paidAwardKeys: (cm.paidAwardKeys || []).filter((k) => k !== key) };
+  }, { eventType: 'MASTER_AWARD_REVOKED', actorId: a.playerId,
+       summary: `Master: ${a.title} revoked from ${who}`, trackDiff: true });
+  toast(`${a.title} revoked from ${who}.`);
+}
+
+/** Unlocks confirmed awards so they can be re-picked. Paid tokens are taken back. */
+async function unlockAwards() {
+  const m = S().currentMaster || E.blankMasterAwards();
+  if (!m.confirmed) return;
+  const paid = (m.awards || []).filter((a) => a.playerId && a.prize === 'TOKEN' && (m.paidAwardKeys || []).includes(a.key));
+  if (!(await confirmAction('Unlock the Master awards?',
+    (paid.length ? `The +1 token paid to ${paid.map((a) => nameOf(a.playerId)).join(', ')} is taken back. ` : '') +
+    'Awards stop showing on every screen until you confirm them again. Double votes stop counting until then.'))) return;
+  await commit((d) => {
+    for (const a of paid) {
+      d.players = d.players.map((x) => x.id === a.playerId
+        ? { ...x, rewardTokens: Math.max(0, (x.rewardTokens || 0) - 1) } : x);
+    }
+    d.currentMaster = { ...d.currentMaster, confirmed: false, paidAwardKeys: [] };
+  }, { eventType: 'MASTER_AWARDS_UNLOCKED', summary: 'Master awards unlocked for editing', trackDiff: true });
+  toast('Awards unlocked. Change them, then confirm again.');
+}
+
+/** Confirmed awards with Revoke / Unlock. Used in Master and Discuss & vote. */
+function masterAdminCard() {
+  const m = S().currentMaster;
+  if (!settings().masterEnabled || !m?.confirmed) return null;
+  const given = (m.awards || []).filter((a) => a.playerId);
+  const card = el('div', 'card private');
+  card.innerHTML = `<h2>Confirmed Master awards</h2>
+    <p class="hint">Revoke one, or unlock them all to re-pick. A revoked +1 token is taken back.</p>
+    <div class="action-grid">${given.length ? given.map((a) => `<div class="action-row">
+      <div class="who">${esc(a.title)}<small>${a.prize === 'TOKEN' ? '+1 token' : 'Double vote'}</small></div>
+      <span>${esc(nameOf(a.playerId))}</span>
+      <button class="btn sm danger" data-revoke="${a.key}">Revoke</button></div>`).join('')
+      : '<p class="empty">No awards were given.</p>'}</div>
+    ${E.PHASE_ORDER.indexOf(S().game.status) <= E.PHASE_ORDER.indexOf(E.PHASE.VOTING)
+      ? '<div class="btn-row"><button class="btn" id="unlockAwards">Unlock to edit</button></div>' : ''}`;
+  card.querySelectorAll('[data-revoke]').forEach((b) => { b.onclick = () => revokeAward(b.dataset.revoke); });
+  const u = card.querySelector('#unlockAwards');
+  if (u) u.onclick = async () => {
+    await unlockAwards();
+    if (S().game.status !== E.PHASE.MASTER) toast('Go back to the Master phase to re-pick, or revoke instead.');
+  };
+  return card;
+}
+
 function viewMaster(main) {
   if (!settings().masterEnabled) {
     main.appendChild(el('div', 'card', `<h2>Master not in play</h2>
@@ -1242,11 +1396,13 @@ function viewMaster(main) {
   const card = el('div', 'card private');
   card.innerHTML = `
     <h2>Master awards</h2>
-    <p class="hint">Choose a living, present player or leave an award blank. Confirmed awards are public and cannot be changed this week.</p>
+    <p class="hint">Choose a living, present player or leave an award blank. Confirmed awards are public. You can still revoke or unlock them below.</p>
     <div id="masterRows"></div>
     <div class="btn-row"><button class="btn primary" id="confirmAwards" ${confirmed ? 'disabled' : ''}>${confirmed ? 'Awards confirmed' : 'Confirm awards'}</button></div>
-    ${confirmed ? '<div class="okbox">Awards are confirmed. Token prizes have been paid and selections are locked.</div>' : ''}`;
+    ${confirmed ? '<div class="okbox">Awards are confirmed. Token prizes have been paid and selections are locked. Use Revoke or Unlock below to change them.</div>' : ''}`;
   main.appendChild(card);
+  const adminCard = masterAdminCard();
+  if (adminCard) main.appendChild(adminCard);
   const rows = card.querySelector('#masterRows');
   for (const award of current.awards || E.blankMasterAwards().awards) {
     const row = el('div', 'action-row');
@@ -1260,7 +1416,7 @@ function viewMaster(main) {
     const prize = row.querySelector('[data-prize]');
     recipient.disabled = prize.disabled = confirmed;
     const save = async () => {
-      if (S().currentMaster?.confirmed) return toast('Awards are already confirmed and cannot be changed this week.', true);
+      if (S().currentMaster?.confirmed) return toast('Awards are confirmed. Unlock them first.', true);
       await commitQuiet((d) => {
         const m = d.currentMaster || E.blankMasterAwards();
         d.currentMaster = { ...m, awards: m.awards.map((x) => x.key === award.key
@@ -1449,6 +1605,8 @@ function viewVoting(main) {
   if (sab) main.appendChild(sab);
   main.appendChild(liveBanner(canVote, new Set(counted.map((b) => b.voterId)), 'vote'));
   main.appendChild(voteBoard(ballots, voters, { silenced }));
+  const awardsCard = masterAdminCard();
+  if (awardsCard) main.appendChild(awardsCard);
   // --- admin entry / correction -------------------------------------------
   const card = el('div', 'card private');
   card.innerHTML = `
@@ -1756,7 +1914,12 @@ async function rewindPhase() {
 function openPlayerModal(id) {
   const p = byId(id);
   if (!p) return;
-  const inv = (p.inventory || []).filter((i) => i.status !== 'USED');
+  const r = S().game.currentRound;
+  /* Everything except items used up in earlier weeks. */
+  const inv = (p.inventory || []).filter((i) => i.status !== 'USED' || i.usedRound === r);
+  const myAwards = (S().currentMaster?.confirmed ? S().currentMaster.awards || [] : [])
+    .filter((a) => a.playerId === id);
+  const allItems = Object.values(E.ITEM);
   openModal(`
     <h2>${esc(p.displayName)}</h2>
     <p class="hint">Manual override. A reason is recorded in the audit log.</p>
@@ -1780,11 +1943,39 @@ function openPlayerModal(id) {
       <label class="field"><span>Spirit points</span>
         <input type="number" id="mSp" min="0" value="${p.spiritPoints}"></label>
     </div>
-    <h3>Inventory</h3>
-    ${inv.length ? `<ul class="feed">${inv.map((i) =>
-      `<li>${esc(ITEM_LABEL[i.rewardType] || i.rewardType)}${i.targetId ? ` → ${esc(nameOf(i.targetId))}` : ''}
-        <span class="badge ${i.status === 'STAGED' ? 'dormant' : 'out'}">${i.status}</span></li>`).join('')}</ul>`
+    <h3>Items</h3>
+    <p class="faint">Item changes save straight away and are logged.</p>
+    ${inv.length ? `<div class="action-grid">${inv.map((i) => {
+      const st = itemStateLabel(i);
+      return `<div class="action-row" style="grid-template-columns:1fr auto">
+        <div class="who">${esc(ITEM_LABEL[i.rewardType] || i.rewardType)}${i.targetId ? ` → ${esc(nameOf(i.targetId))}` : ''}
+          <small><span class="badge ${st.cls}">${esc(st.txt)}</span></small></div>
+        <span style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+          <button class="btn sm" data-item="${i.id}" data-do="NOW">Active this week</button>
+          <button class="btn sm ghost" data-item="${i.id}" data-do="NEXT">Next week</button>
+          <button class="btn sm ghost" data-item="${i.id}" data-do="USED">Mark used</button>
+          <button class="btn sm danger" data-item="${i.id}" data-do="REMOVE">Remove</button>
+        </span></div>`; }).join('')}</div>
+      <div class="checkline"><input type="checkbox" id="mRefund">
+        <label for="mRefund">Refund 1 token when removing an item</label></div>`
       : '<p class="empty">Nothing held.</p>'}
+    <h3>Give an item</h3>
+    <div class="inline">
+      <label class="field" style="margin:0"><span>Item</span>
+        <select id="gItem"><option value="">— choose —</option>${allItems.map((t) =>
+          `<option value="${t}">${esc(ITEM_LABEL[t] ?? t)}</option>`).join('')}</select></label>
+      <label class="field" style="margin:0"><span>Starts</span>
+        <select id="gWhen"><option value="NOW">This week</option><option value="NEXT">Next week</option></select></label>
+      <button class="btn" id="gGo">Give</button>
+    </div>
+    <label class="field hidden-target" id="gTargetWrap" hidden style="margin-top:10px"><span>Sabotage target</span>
+      ${targetSelect('gTarget', null, { pool: living().filter((x) => x.id !== id), blank: '— choose —' })}</label>
+    <div class="checkline"><input type="checkbox" id="gCharge">
+      <label for="gCharge">Charge 1 token (${p.rewardTokens} held)</label></div>
+    ${myAwards.length ? `<h3>Master awards</h3><div class="action-grid">${myAwards.map((a) =>
+      `<div class="action-row" style="grid-template-columns:1fr auto">
+        <div class="who">${esc(a.title)}<small>${a.prize === 'TOKEN' ? '+1 token' : 'Double vote'}</small></div>
+        <button class="btn sm danger" data-revoke="${a.key}">Revoke</button></div>`).join('')}</div>` : ''}
     ${p.flags?.revealAlignmentOnDeath ? '<p class="faint">Alignment will be revealed on death.</p>' : ''}
     <label class="field"><span>Reason for change</span>
       <input type="text" id="mWhy" placeholder="e.g. corrected a misheard action"></label>
@@ -1800,6 +1991,31 @@ function openPlayerModal(id) {
       <button class="btn danger sm" id="mRemove">Remove ${esc(p.displayName)}</button>
     </div>`, (root, close) => {
     root.querySelector('#mCancel').onclick = close;
+    const reopen = () => openPlayerModal(id);
+    root.querySelectorAll('[data-item]').forEach((b) => {
+      b.onclick = async () => {
+        const refund = !!root.querySelector('#mRefund')?.checked;
+        close();
+        await editItem(id, b.dataset.item, b.dataset.do, refund);
+        reopen();
+      };
+    });
+    const gItem = root.querySelector('#gItem');
+    gItem.onchange = () => { root.querySelector('#gTargetWrap').hidden = gItem.value !== E.ITEM.SABOTAGE; };
+    root.querySelector('#gGo').onclick = async () => {
+      const type = gItem.value;
+      const targetId = root.querySelector('[data-field="gTarget"]').value || null;
+      if (!type) return toast('Pick an item to give.', true);
+      if (type === E.ITEM.SABOTAGE && !targetId) return toast('Pick who the Sabotage is aimed at.', true);
+      const opts = { charge: root.querySelector('#gCharge').checked,
+                     when: root.querySelector('#gWhen').value, targetId };
+      close();
+      await grantItem(id, type, opts);
+      reopen();
+    };
+    root.querySelectorAll('[data-revoke]').forEach((b) => {
+      b.onclick = async () => { close(); await revokeAward(b.dataset.revoke); reopen(); };
+    });
     root.querySelector('#mRemove').onclick = async () => {
       close();
       if (!(await confirmAction(`Remove ${p.displayName}?`,

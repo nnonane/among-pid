@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- mafia v1.3.1 | observer.html | 21 Oct 2026 | visual layer v1.0 (cartoon skin) -->
+<!-- mafia v1.5 | observer.html | 21 Oct 2026 | visual layer v1.0 (cartoon skin) -->
 <!--
   THE OBSERVER SCREEN.
   Read-only. Same look as player.html and spectator.html, laid out wide for
@@ -552,7 +552,8 @@ const AUDIT_KIND = {
   TOKENS_AWARDED: 'token', MASTER_AWARD: 'master', MASTER_AWARDS_CONFIRMED: 'master',
   SABOTAGE_USED: 'sab', RESURRECTION: 'life', MAFIA_LEGACY: 'kill', GAME_FINISHED: 'game',
   GAME_RESUMED: 'game', SESSION_OPENED: 'phase', SESSION_CLOSED: 'phase', WHEEL_SPIN: 'mini',
-  MINIGAME_LAUNCHED: 'mini', ROLES_DEALT: 'role', LATE_JOINER_ROLE: 'role'
+  MINIGAME_LAUNCHED: 'mini', ROLES_DEALT: 'role', LATE_JOINER_ROLE: 'role',
+  ITEM_EDITED: 'shop', ITEM_GRANTED: 'shop', MASTER_AWARD_REVOKED: 'master', MASTER_AWARDS_UNLOCKED: 'master'
 };
 const prettyType = (t) => String(t || 'Update').toLowerCase().replace(/_/g, ' ')
   .replace(/^./, (c) => c.toUpperCase());
@@ -1136,8 +1137,9 @@ function itemChips(p) {
     const target = i.targetId ? ` &rarr; ${esc(nameOf(i.targetId))}` : '';
     if (i.status === 'USED') return `<span class="it used">${label}${target} &middot; used this week</span>`;
     if (i.status === 'STAGED') return `<span class="it used">${label}${target} &middot; in use</span>`;
+    if (i.expiresRound != null && i.expiresRound < r) return `<span class="it">${label}${target} &middot; expired</span>`;
     if (i.eligibleFromRound != null && i.eligibleFromRound > r) return `<span class="it">${label}${target} &middot; from week ${i.eligibleFromRound}</span>`;
-    return `<span class="it ready">${label}${target} &middot; ready</span>`;
+    return `<span class="it ready">${label}${target} &middot; ${i.expiresRound != null ? 'active this week' : 'ready'}</span>`;
   });
   const sab = sabotage();
   if (sab && sab.status === 'ACTIVE' && sab.targetId === p.id && reached('VOTING') && phase() !== 'CLOSED') chips.push('<span class="it bad">Sabotaged this week</span>');
