@@ -1,4 +1,4 @@
-/* mafia v1.2 | store.js | 14 Oct 2026 */
+/* mafia v1.4 | store.js | 21 Oct 2026 */
 /*
   ALL persistence lives here. No game rules. No DOM.
   This is the swappable adapter: replacing the LocalAdapter with a Supabase
@@ -15,7 +15,8 @@ import {
   DEFAULT_SETTINGS,
   RETIRED_ROLES,
   RETIRED_ITEMS,
-  blankMasterAwards
+  blankMasterAwards,
+  itemWindow
 } from './engine.js';
 export const SCHEMA_VERSION = 1;
 const STORAGE_KEY = 'weeklyMafia:v1';
@@ -125,13 +126,14 @@ export function retireItems(p) {
   };
 }
 export function newInventoryItem(rewardType, round, targetId = null) {
+  const { eligibleFromRound, expiresRound } = itemWindow(rewardType, round);
   return {
     id: 'i_' + Math.random().toString(36).slice(2, 10),
     rewardType,
     status: 'OWNED',              // OWNED | STAGED | USED
     purchasedRound: round,
-    eligibleFromRound: round + 1, // cannot apply retroactively
-    expiresRound: null,
+    eligibleFromRound,            // Temporary Immunity: this week. Others: next week.
+    expiresRound,                 // Temporary Immunity: end of this week. Others: never.
     stagedRound: null,
     usedRound: null,
     targetId                      // Sabotage only

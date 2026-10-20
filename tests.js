@@ -1,4 +1,4 @@
-/* mafia v1.2 | tests.js | 14 Oct 2026 */
+/* mafia v1.4 | tests.js | 21 Oct 2026 */
 /* Disposable test harness. Runs in Node or in the browser via tests.html. */
 import * as E from './engine.js';
 import { Store, MemoryAdapter, blankState, newPlayer, newInventoryItem } from './store.js';
@@ -48,8 +48,9 @@ const staged = (type, round) => ({
   status: 'STAGED',
   stagedRound: round
 });
+/** An item bought this week and ready to use (immunity: this week only). */
 const owned = (type, round) => ({
-  ...newInventoryItem(type, round - 1),
+  ...newInventoryItem(type, round),
   status: 'OWNED',
   eligibleFromRound: round
 });
@@ -405,9 +406,40 @@ test('valid purchase is permitted', () => {
   const s = makeState([{ id: 'c1', tokens: 1 }]);
   eq(E.canPurchase(s.players[0], E.ITEM.EXTRA_VOTE, s.players).ok, true);
 });
-test('immunity cannot be applied retroactively', () => {
+test('Temporary Immunity covers the week it is bought, and only that week', () => {
   const item = newInventoryItem(E.ITEM.TEMP_IMMUNITY, 3);
-  eq(item.eligibleFromRound, 4);
+  eq(item.eligibleFromRound, 3); eq(item.expiresRound, 3);
+});
+test('other items still start the following week', () => {
+  const item = newInventoryItem(E.ITEM.EXTRA_VOTE, 3);
+  eq(item.eligibleFromRound, 4); eq(item.expiresRound, null);
+});
+test('immunity bought this week blocks this week\'s kill', () => {
+  const s = makeState(baseCast.map(p => p.id === 'c1'
+    ? { ...p, inventory: [newInventoryItem(E.ITEM.TEMP_IMMUNITY, 1)] } : p));
+  s.currentActions = [{ actorId: 'm1', type: E.ACTION.MAFIA_KILL_VOTE, targetId: 'c1' }];
+  const r = E.resolveHiddenActions(s, E.makeRng(1));
+  eq(r.death, null); eq(r.blockedBy, 'IMMUNITY');
+});
+test('immunity bought this week shields from this week\'s vote', () => {
+  const s = makeState(baseCast.map(p => p.id === 'c1'
+    ? { ...p, inventory: [newInventoryItem(E.ITEM.TEMP_IMMUNITY, 1)] } : p));
+  const r = E.resolveVote(s, [{ voterId: 'c2', targetId: 'c1' }, { voterId: 'c3', targetId: 'c1' }]);
+  eq(r.eliminated, null); assert(r.shielded.includes('c1'));
+});
+test('immunity bought this week blocks this week\'s Sabotage', () => {
+  const s = makeState(baseCast.map(p => {
+    if (p.id === 'm1') return { ...p, inventory: [sabotage('c1', 2)] };
+    if (p.id === 'c1') return { ...p, inventory: [newInventoryItem(E.ITEM.TEMP_IMMUNITY, 2)] };
+    return p;
+  }), { currentRound: 2 });
+  eq(E.sabotageFor(s).status, 'BLOCKED');
+});
+test('immunity no longer protects the following week', () => {
+  const s = makeState(baseCast.map(p => p.id === 'c1'
+    ? { ...p, inventory: [newInventoryItem(E.ITEM.TEMP_IMMUNITY, 1)] } : p), { currentRound: 2 });
+  s.currentActions = [{ actorId: 'm1', type: E.ACTION.MAFIA_KILL_VOTE, targetId: 'c1' }];
+  eq(E.resolveHiddenActions(s, E.makeRng(1)).death, 'c1');
 });
 // ===========================================================================
 suite('Spirits and resurrection');

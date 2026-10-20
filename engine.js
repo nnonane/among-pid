@@ -1,4 +1,4 @@
-/* mafia v1.2 | engine.js | 14 Oct 2026 */
+/* mafia v1.4 | engine.js | 21 Oct 2026 */
 /*
   v0.2: Doctor and Sheriff retired. Every non-Mafia player is a Civilian.
   The only night action is the Mafia kill; Temporary Immunity is the only
@@ -14,6 +14,13 @@
   Discuss & vote. One Sabotage can be waiting at a time. Temporary Immunity
   blocks it. If the target is absent that week it waits for the next vote;
   if the target is dead or blocked it is used up.
+
+  v1.4: Temporary Immunity covers THE WEEK IT IS BOUGHT, and only that week.
+  The shop opens (Tokens & purchases) before the night is resolved and
+  before the vote, so immunity bought this week blocks this week's kill,
+  vote and Sabotage. It expires at the end of that week. Before this it
+  only switched on the following week and then never expired.
+  Every other item still starts the week after it is bought.
 */
 /*
   PURE GAME RULES. No DOM. No storage. No side effects.
@@ -83,6 +90,16 @@ export const STORE = {
     ITEM.SABOTAGE
   ]
 };
+/**
+ * When a newly bought item can be used: { eligibleFromRound, expiresRound }.
+ * Temporary Immunity: the week it is bought, and only that week.
+ * Everything else: from next week, no expiry.
+ */
+export function itemWindow(rewardType, round) {
+  if (rewardType === ITEM.TEMP_IMMUNITY) return { eligibleFromRound: round, expiresRound: round };
+  return { eligibleFromRound: round + 1, expiresRound: null };
+}
+
 /** Items that need a target chosen at purchase. */
 export const TARGETED_ITEMS = [ITEM.SABOTAGE];
 // Admin-configurable. Never hard-code these inline — surface them in settings.

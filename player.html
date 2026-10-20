@@ -1,5 +1,6 @@
 <!DOCTYPE html>
-<!-- mafia v1.2 | player.html | 14 Oct 2026 | visual layer v1.0 (cartoon skin) -->
+<!-- mafia v1.4 | player.html | 21 Oct 2026 | visual layer v1.0 (cartoon skin) -->
+<!-- v1.4: Temporary Immunity protects the week it is bought (shop text only). -->
 <!--
   v0.7: Doctor and Sheriff retired. Only the Mafia have a night action;
   everyone else is a Civilian. A seat still marked Doctor or Sheriff in the
@@ -460,7 +461,7 @@ const ITEM_LABEL = {
   VOTE_MANIPULATION: 'Vote Manipulation (retired)'
 };
 const ITEM_HINT = {
-  TEMP_IMMUNITY: 'Blocks the kill, the public vote and Sabotage next round.',
+  TEMP_IMMUNITY: 'Protects you this week: blocks tonight’s kill, this week’s vote and Sabotage.',
   EXTRA_VOTE: 'Adds one weight to one ballot.',
   DISCOUNTED_RESURRECTION: 'Kept through death. Lowers one resurrection to 2 points.',
   RECRUIT_NEW_MAFIA: 'Convert a living non-Mafia. Blocked above three active Mafia.',
@@ -521,6 +522,7 @@ const owns = (type) => (me?.inventory || []).some(
   (i) => i.rewardType === type
     && (i.status === 'OWNED' || i.status === 'STAGED')
     && (i.eligibleFromRound == null || i.eligibleFromRound <= round())
+    && (i.expiresRound == null || i.expiresRound >= round())
 );
 /* --------------------------------------------------------------- load -- */
 async function load() {

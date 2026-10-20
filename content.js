@@ -1,4 +1,4 @@
-/* mafia v1.2 | content.js | 14 Oct 2026 */
+/* mafia v1.4 | content.js | 21 Oct 2026 */
 /*
   YOUR FILE. Edit freely — nothing here affects game logic.
   Minigames, labels and display text only.
@@ -112,7 +112,7 @@ export const ITEM_LABEL = {
   VOTE_MANIPULATION: 'Vote Manipulation (retired)'
 };
 export const ITEM_HINT = {
-  TEMP_IMMUNITY: 'Blocks the kill, the public vote and Sabotage next round.',
+  TEMP_IMMUNITY: 'Protects you this week: blocks tonight’s kill, this week’s vote and Sabotage.',
   EXTRA_VOTE: 'Adds one weight to one ballot.',
   DISCOUNTED_RESURRECTION: 'Kept through death. Lowers one resurrection to 2 points.',
   RECRUIT_NEW_MAFIA: 'Convert a living non-Mafia. Blocked above three active Mafia.',

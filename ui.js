@@ -1,4 +1,4 @@
-/* mafia v1.2 | ui.js | 14 Oct 2026 */
+/* mafia v1.4 | ui.js | 21 Oct 2026 */
 /*
   Rendering and admin controls. Talks to store.js and engine.js only.
   Contains NO game rules — anything that decides an outcome lives in engine.js.
@@ -261,7 +261,8 @@ const ownsUsable = (p, type) =>
   (p.inventory || []).some(
     (i) =>
       i.rewardType === type && i.status === 'OWNED' &&
-      (i.eligibleFromRound == null || i.eligibleFromRound <= S().game.currentRound)
+      (i.eligibleFromRound == null || i.eligibleFromRound <= S().game.currentRound) &&
+      (i.expiresRound == null || i.expiresRound >= S().game.currentRound)
   );
 /**
  * Distinguishes a submission the player made themselves from one the admin
@@ -1112,7 +1113,9 @@ async function purchase(playerId, itemType, targetId = null) {
     });
   }, { eventType: 'PURCHASE', actorId: playerId,
        summary: `${p.displayName} purchased ${ITEM_LABEL[itemType]}` });
-  toast(`${ITEM_LABEL[itemType]} purchased. Usable from week ${round + 1}.`);
+  toast(itemType === E.ITEM.TEMP_IMMUNITY
+    ? `${ITEM_LABEL[itemType]} purchased. Protects ${p.displayName} for the rest of this week.`
+    : `${ITEM_LABEL[itemType]} purchased. Usable from week ${round + 1}.`);
   return true;
 }
 /* ------------------------------------------------------ RESOLUTION ----- */
