@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- mafia v1.3 | observer.html | 21 Oct 2026 | visual layer v1.0 (cartoon skin) -->
+<!-- mafia v1.3.1 | observer.html | 21 Oct 2026 | visual layer v1.0 (cartoon skin) -->
 <!--
   THE OBSERVER SCREEN.
   Read-only. Same look as player.html and spectator.html, laid out wide for
@@ -23,8 +23,12 @@
   unless the account is in the observers table (or is an admin), and always
   refuses a login that is linked to a player seat.
 
-  Press H (or "Hide secrets") to cover the screen instantly if a player
-  walks past or you are about to share your screen.
+  Press H (or "Hide secrets") to cover the screen instantly.
+
+  v1.3.1: the crewmate groups used the class "crew", which is also the
+  avatar class (36px wide). The Crew and Spirits groups were squashed to
+  36px and their cards spilled over each other. Groups now use g-* classes.
+  Sign-in errors now say exactly what is wrong.
 -->
 <html lang="en">
 <head>
@@ -35,11 +39,6 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600;700&family=Nunito:wght@400;700&display=swap" rel="stylesheet">
 <style>
-  /* =====================================================================
-     AMONG PID - observer screen. Same skin as player.html / spectator.html.
-     Spacing scale: 4 / 8 / 12 / 16 / 20 / 24 / 32
-     Radii: 20 panels, 16 controls and tiles, 12 small, 999 pills
-     ===================================================================== */
   :root {
     --ink: #0a0e22;
     --panel: #1c2650;
@@ -52,7 +51,6 @@
     --yellow: #ffd23f;
     --green: #4ade80;
     --purple: #a98bff;
-    --pink: #ff7ac8;
     --line: 3px solid var(--ink);
     --drop: 0 6px 0 var(--ink);
     --drop-sm: 0 4px 0 var(--ink);
@@ -67,7 +65,6 @@
   body { margin: 0; min-height: 100vh; color: var(--text); overflow-x: hidden;
          font: 400 16px/1.5 "Nunito", system-ui, sans-serif; }
 
-  /* ---------------------------------------------------------- background */
   body::before {
     content: ""; position: fixed; inset: 0; z-index: -2; pointer-events: none;
     background:
@@ -77,9 +74,6 @@
       radial-gradient(1.5px 1.5px at 72% 12%, #fff 50%, transparent 51%),
       radial-gradient(1px 1px at 38% 64%, #cfd8ff 50%, transparent 51%),
       radial-gradient(2px 2px at 86% 58%, #fff 50%, transparent 51%),
-      radial-gradient(1px 1px at 22% 86%, #fff 50%, transparent 51%),
-      radial-gradient(1.5px 1.5px at 58% 36%, #ffe9a8 50%, transparent 51%),
-      radial-gradient(1px 1px at 92% 90%, #fff 50%, transparent 51%),
       radial-gradient(circle at 20% 10%, #2a1f5c 0, transparent 45%),
       radial-gradient(circle at 85% 80%, #102a5c 0, transparent 50%),
       #0a0d26;
@@ -104,6 +98,7 @@
   .wrap.narrow { max-width: 560px; }
   .hide { display: none !important; }
   .layout { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 20px; align-items: start; }
+  .col-main, .col-side { min-width: 0; }
   .col-side { position: sticky; top: 16px; }
   @media (max-width: 1040px) {
     .layout { grid-template-columns: 1fr; }
@@ -133,19 +128,17 @@
   button.chipbtn:active:not(:disabled) { transform: translateY(3px); box-shadow: 0 1px 0 var(--ink); }
 
   /* --------------------------------------------------------------- cards */
-  .card { position: relative; background: var(--panel); border: var(--line);
+  .card { position: relative; min-width: 0; background: var(--panel); border: var(--line);
           border-radius: 20px; padding: 20px; margin-bottom: 20px; box-shadow: var(--drop); }
   .card.now { border-color: var(--yellow);
               box-shadow: 0 0 0 3px rgba(255, 210, 63, .3), 0 0 26px rgba(255, 210, 63, .18), var(--drop); }
   h2 { margin: 0 0 12px; font: 700 21px/1.2 var(--head); color: #fff;
        text-shadow: var(--o2); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   h2 .sp { flex: 1; }
-  h3 { margin: 0 0 8px; font: 700 28px/1.15 var(--head); color: var(--accent, #fff);
-       text-shadow: var(--o2); }
+  h3 { margin: 0 0 8px; font: 700 28px/1.15 var(--head); color: var(--accent, #fff); text-shadow: var(--o2); }
   p.hint { margin: 0 0 16px; color: var(--muted); font-size: 15px; }
   .sub { margin: 16px 0 8px; font: 600 13px/1.3 var(--head); letter-spacing: .1em;
          text-transform: uppercase; color: var(--faint); }
-  .sub:first-child { margin-top: 0; }
 
   .livetag { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px;
              font: 600 12px/1.4 var(--head); letter-spacing: .08em; text-transform: uppercase;
@@ -164,7 +157,6 @@
   .login-crew .crew:nth-child(2) { width: 72px; height: 72px; }
   .login-title { justify-content: center; font-size: 30px; margin-bottom: 4px; }
   .login .fields { text-align: left; }
-  .login p.hint { margin-bottom: 16px; }
   .veil-card { text-align: center; padding: 48px 20px; max-width: 560px; margin: 40px auto; }
   .veil-card .crew { width: 96px; height: 96px; margin: 0 auto 12px; }
   .veil-card button { max-width: 280px; margin: 8px auto 0; }
@@ -205,8 +197,7 @@
               font: 700 22px/1.25 var(--head); color: #fff; text-shadow: var(--o2); }
   .announce .ak { display: inline-block; margin-bottom: 10px; padding: 3px 14px; border: var(--line);
                   border-radius: 999px; background: var(--yellow); color: var(--ink);
-                  font: 600 13px/1.4 var(--head); letter-spacing: .08em; text-transform: uppercase;
-                  text-shadow: none; }
+                  font: 600 13px/1.4 var(--head); letter-spacing: .08em; text-transform: uppercase; text-shadow: none; }
   .announce .at { display: block; }
   .truth { margin-top: 10px; font: 600 15px/1.4 "Nunito", sans-serif; color: #ffb3c7; text-shadow: none; }
 
@@ -265,11 +256,8 @@
   .pill.on { background: var(--green); color: var(--ink); }
   .pill.no { background: var(--red); color: #fff; }
   .pill.cy { background: var(--cyan); color: var(--ink); }
-  .pill.pu { background: var(--purple); color: var(--ink); }
   .empty { font-size: 15px; font-style: italic; color: var(--faint); margin: 0; }
-
   .tally { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-  .tally .vchip b { color: var(--yellow); }
 
   /* ------------------------------------------------ discuss & vote board */
   .vtop { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
@@ -281,8 +269,7 @@
   .vclock.paused { color: #9aa4c4; }
   .vboard { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; margin: 4px 0 16px; }
   .vtile { position: relative; min-width: 0; padding: 10px; background: var(--panel-2); border: var(--line);
-           border-radius: 16px; box-shadow: var(--drop-sm);
-           transition: border-color .15s, background .15s, box-shadow .15s; }
+           border-radius: 16px; box-shadow: var(--drop-sm); }
   .vtile.lead { border-color: var(--yellow); background: #2b2a45;
                 box-shadow: 0 0 0 3px rgba(255, 210, 63, .35), 0 0 18px rgba(255, 210, 63, .35), var(--drop-sm); }
   .vtile.gone { border-color: var(--red); background: #3b0d1c; }
@@ -290,8 +277,7 @@
   .vmeta { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
   .vtags { display: flex; flex-wrap: wrap; gap: 4px; }
   .vhead .crew { width: 34px; height: 34px; }
-  .vn { max-width: 100%; font: 600 15px/1.2 var(--head); overflow: hidden; overflow-wrap: anywhere;
-        display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .vn { max-width: 100%; font: 600 15px/1.2 var(--head); overflow: hidden; overflow-wrap: anywhere; }
   .vtick { padding: 1px 8px; font: 600 12px/1.4 var(--head); color: var(--ink);
            background: var(--green); border: 2px solid var(--ink); border-radius: 999px; }
   .vtick.red { background: var(--red); color: #fff; }
@@ -310,12 +296,11 @@
   .vchip.x-extra { background: #33215e; border-color: var(--purple); }
   .vnone { font-size: 14px; font-style: italic; color: var(--faint); }
   @keyframes vpop { from { opacity: 0; transform: scale(.6); } to { opacity: 1; transform: none; } }
-  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; font-size: 13px; color: var(--muted); }
+  .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 13px; color: var(--muted); }
   .legend .vchip { animation: none; }
 
   .lead-box { display: flex; align-items: center; gap: 12px; margin: 0 0 16px; padding: 12px 14px;
-              background: #2b2a45; border: 3px solid var(--yellow); border-radius: 16px;
-              box-shadow: var(--drop-sm); }
+              background: #2b2a45; border: 3px solid var(--yellow); border-radius: 16px; box-shadow: var(--drop-sm); }
   .lead-box .lk { font: 600 13px/1.3 var(--head); letter-spacing: .08em; text-transform: uppercase; color: var(--yellow); }
   .lead-box .lv { font: 700 20px/1.25 var(--head); color: #fff; text-shadow: var(--o2); overflow-wrap: anywhere; }
   .lead-box.tie { background: #141b42; }
@@ -329,9 +314,7 @@
               radial-gradient(1.5px 1.5px at 8% 22%, #fff 50%, transparent 51%),
               radial-gradient(1px 1px at 24% 70%, #fff 50%, transparent 51%),
               radial-gradient(2px 2px at 40% 14%, #fff 50%, transparent 51%),
-              radial-gradient(1px 1px at 62% 82%, #dfe6ff 50%, transparent 51%),
               radial-gradient(1.5px 1.5px at 78% 30%, #fff 50%, transparent 51%),
-              radial-gradient(1px 1px at 92% 64%, #fff 50%, transparent 51%),
               #060919; }
   .reveal .rk { display: inline-block; padding: 3px 14px; font: 600 14px/1.4 var(--head);
                 color: var(--ink); background: var(--yellow); border: var(--line); border-radius: 999px; }
@@ -349,27 +332,28 @@
   .reveal.civ .rr strong { color: var(--green); }
   .reveal.none .rn { margin-top: 12px; font-size: 26px; color: #d7ddf3; }
 
-  .winner { margin: -20px -20px 0; padding: 32px 20px; text-align: center; border-radius: 17px 17px 0 0; }
+  .winner { margin: -20px -20px 0; padding: 32px 20px; text-align: center; border-radius: 17px; }
   .winner.good { background: #16784a; }
   .winner.bad { background: #b3182f; }
   .winner .wk { display: inline-block; margin-bottom: 12px; padding: 3px 14px; font: 600 14px/1.4 var(--head);
                 letter-spacing: .08em; text-transform: uppercase; color: var(--ink);
                 background: var(--yellow); border: var(--line); border-radius: 999px; }
   .winner h3 { margin: 0; font-size: clamp(36px, 7vw, 52px); color: #fff; text-shadow: var(--o3); }
+  .card.end { padding-bottom: 0; overflow: hidden; }
 
   /* ------------------------------------------------------------ dossier */
-  .grp { margin: 0 0 16px; }
+  .grp { margin: 0 0 20px; min-width: 0; }
   .grp:last-child { margin-bottom: 0; }
   .grp-h { display: flex; align-items: center; gap: 8px; margin: 0 0 10px;
            font: 700 17px/1.2 var(--head); color: #fff; text-shadow: var(--o2); }
   .grp-h .cnt { padding: 1px 10px; font: 600 13px/1.4 var(--head); color: var(--ink); background: var(--yellow);
                 border: 2px solid var(--ink); border-radius: 999px; text-shadow: none; }
-  .grp.mafia .grp-h { color: #ff8a8a; }
-  .pcs { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+  .grp.g-mafia .grp-h { color: #ff8a8a; }
+  .pcs { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
   .pc { min-width: 0; padding: 12px; background: var(--panel-2); border: var(--line);
         border-radius: 16px; box-shadow: var(--drop-sm); }
-  .pc.mafia { background: #2a0914; }
-  .pc.spirit, .pc.left { opacity: .8; }
+  .pc.is-mafia { background: #2a0914; }
+  .pc.is-out { opacity: .85; }
   .pch { display: flex; align-items: center; gap: 10px; }
   .pch .crew { width: 40px; height: 40px; }
   .pcm { flex: 1; min-width: 0; }
@@ -377,16 +361,16 @@
   .pct { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
   .rb { padding: 1px 9px; font: 600 12px/1.4 var(--head); letter-spacing: .04em; text-transform: uppercase;
         border: 2px solid var(--ink); border-radius: 999px; }
-  .rb.mafia { background: var(--red); color: #fff; }
-  .rb.civ { background: var(--green); color: var(--ink); }
+  .rb.r-mafia { background: var(--red); color: #fff; }
+  .rb.r-civ { background: var(--green); color: var(--ink); }
   .rb.st { background: #3a4266; color: #d7ddf3; text-transform: none; letter-spacing: 0; }
   .rb.away { background: var(--yellow); color: var(--ink); text-transform: none; letter-spacing: 0; }
-  .stats { display: flex; gap: 8px; margin-top: 10px; }
+  .mstats { display: flex; gap: 8px; margin-top: 10px; }
   .ms { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
         font: 700 15px/1.3 var(--head); background: #0c1230; border: 2px solid var(--ink); border-radius: 12px; }
   .ms svg { width: 18px; height: 18px; }
   .items { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
-  .it { padding: 2px 9px; font: 700 12.5px/1.4 "Nunito", sans-serif; color: #e9e2ff; background: #33215e;
+  .it { max-width: 100%; padding: 2px 9px; font: 700 12.5px/1.4 "Nunito", sans-serif; color: #e9e2ff; background: #33215e;
         border: 2px solid var(--ink); border-radius: 999px; }
   .it.ready { background: #0f3a28; color: #cff8de; }
   .it.used { background: #3a2a07; color: #ffe894; }
@@ -405,10 +389,10 @@
   .facts { margin: 12px 0 0; padding: 0; list-style: none; font-size: 15px; color: var(--muted); }
   .facts li { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-top: 2px dashed #2a3463; }
   .facts li:first-child { border-top: 0; }
-  .facts b { color: #fff; font-family: var(--head); font-weight: 600; text-align: right; }
+  .facts b { flex: 0 0 auto; color: #fff; font-family: var(--head); font-weight: 600; text-align: right; }
 
   /* ----------------------------------------------------------- timeline */
-  .tl { max-height: calc(100vh - 360px); min-height: 280px; overflow-y: auto; margin: 0 -8px; padding: 0 8px;
+  .tl { max-height: calc(100vh - 380px); min-height: 280px; overflow-y: auto; margin: 0 -8px; padding: 0 8px;
         scrollbar-width: thin; scrollbar-color: #3a4266 transparent; }
   @media (max-width: 1040px) { .tl { max-height: 560px; } }
   .ev { display: flex; gap: 10px; align-items: flex-start; padding: 9px 0; border-top: 2px dashed #2a3463; }
@@ -422,7 +406,6 @@
   .ev .tx i { font-style: normal; color: #ff8a8a; }
   .ev .wh { display: block; margin-top: 2px; font-size: 12.5px; color: var(--faint); }
 
-  /* ----------------------------------------------------------- footer */
   .foot { margin-top: 12px; text-align: center; font-size: 14px; color: var(--muted); }
   .outwrap { max-width: 400px; margin: 8px auto 0; }
 
@@ -515,6 +498,7 @@
       </aside>
     </div>
     <div class="outwrap">
+      <div class="foot" id="who"></div>
       <button class="ghost" id="out">Stop observing</button>
       <div class="foot" id="foot"></div>
     </div>
@@ -539,8 +523,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g,
   (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
 
-/* Same avatar hash as player.html and spectator.html, so everyone is the
-   same colour on every screen. */
+/* Same avatar hash as player.html and spectator.html. */
 const CREW = ['#ff5a5a','#4d8dff','#34d27b','#ff7ac8','#ff9a3c','#ffd23f','#a98bff','#38d9f5','#b6f04a','#f2f4ff','#c7844a','#9aa4bc'];
 const crew = (id, cls = '') => { let h = 5381; for (const ch of String(id ?? '')) h = ((h * 33) ^ ch.charCodeAt(0)) >>> 0;
   return `<svg class="crew ${cls}" style="--c:${CREW[h % CREW.length]}" viewBox="0 0 64 64" aria-hidden="true"><use href="#crew"/></svg>`; };
@@ -557,7 +540,6 @@ const HERO_TITLE = {
   RESOLUTION: 'The night is over', VOTING: 'Discuss & vote', RESULTS: 'Results', FINISHED: 'Game over'
 };
 
-/* Timeline icons. Every audit entry the console writes maps to one. */
 const KIND = {
   kill:   ['🔪', '#ff4d4d'], vote:  ['🗳️', '#ffd23f'], shop:  ['🛒', '#a98bff'],
   token:  ['🪙', '#ffd23f'], master:['⭐', '#38d9f5'], night: ['🌙', '#4d8dff'],
@@ -583,13 +565,12 @@ let actions = [];
 let ballots = [];
 let purchases = [];
 let voteTimer = null;
-let skew = 0;                 // server clock minus this clock, in ms
+let skew = 0;
 let syncError = '';
 let timer = null;
 let loaded = false;
+let signedInAs = '';
 
-/* Timeline events this page works out itself by comparing refreshes
-   (kill picks, votes, shop requests, phase changes). */
 let liveEvents = [];
 let liveSeq = 0;
 let prevActs = null, prevVotes = null, seenBuys = null, prevPhase = null, trackRound = null;
@@ -622,21 +603,14 @@ const gameState = () => ({
   currentMaster: blob.currentMaster || E.blankMasterAwards()
 });
 
-/* Retired roles read as Civilian, exactly as everywhere else. */
 const toPlayer = (r) => {
   const role = E.RETIRED_ROLES.includes(r.role) ? E.ROLE.CIVILIAN : r.role;
   return {
-    id: r.id,
-    displayName: r.display_name,
-    role,
-    alignment: E.alignmentOf(role),
-    lifeStatus: r.life_status,
-    attendanceStatus: r.attendance_status,
-    rewardTokens: r.reward_tokens ?? 0,
-    spiritPoints: r.spirit_points ?? 0,
+    id: r.id, displayName: r.display_name, role, alignment: E.alignmentOf(role),
+    lifeStatus: r.life_status, attendanceStatus: r.attendance_status,
+    rewardTokens: r.reward_tokens ?? 0, spiritPoints: r.spirit_points ?? 0,
     inventory: Array.isArray(r.inventory) ? r.inventory : [],
-    flags: r.flags ?? {},
-    joinedRound: r.joined_round ?? 0
+    flags: r.flags ?? {}, joinedRound: r.joined_round ?? 0
   };
 };
 
@@ -650,8 +624,7 @@ const masterX2 = () => E.masterDoubleVoteIds(blob.currentMaster || {});
 const weightOf = (id) => 1 + (staged(byId(id), E.ITEM.EXTRA_VOTE) ? 1 : 0) + (masterX2().includes(id) ? 1 : 0);
 const sabotage = () => (players.length ? E.sabotageFor(gameState()) : null);
 
-/* Mafia picks as the console sees them: anything Hunter typed in by hand
-   (ADMIN) wins, otherwise the player's own submission. Same rule as live.js. */
+/* Admin-entered picks win, otherwise the player's own. Same rule as live.js. */
 function mergeActs(blobActs, rows) {
   const m = new Map();
   for (const a of blobActs || []) if (a && a.actorId) m.set(a.actorId, a);
@@ -668,6 +641,7 @@ function mergeActs(blobActs, rows) {
 async function load() {
   const { data: { user } } = await sb.auth.getUser();
   if (!user) return;
+  signedInAs = user.email || '';
   $('go').disabled = true;
   const ok = await refresh(true);
   $('go').disabled = false;
@@ -676,6 +650,7 @@ async function load() {
   $('loginCard').classList.add('hide');
   $('wrap').classList.remove('narrow');
   ['live', 'phaseChip', 'veilBtn'].forEach((id) => $(id).classList.remove('hide'));
+  $('who').textContent = signedInAs ? `Signed in as ${signedInAs}` : '';
   applyVeil();
   schedule();
 }
@@ -693,8 +668,9 @@ async function refresh(first = false) {
   const { data, error } = await sb.rpc('observer_snapshot');
   if (error) {
     if (first) {
+      const msg = explainError(error.message);
       await sb.auth.signOut();
-      fail(explainError(error.message));
+      fail(msg);
       return false;
     }
     syncError = error.message;
@@ -709,8 +685,9 @@ async function refresh(first = false) {
 }
 
 function explainError(m) {
-  if (/NOT_OBSERVER/.test(m)) return 'This account is not set up as an observer. Add its email in step 3 of observer.sql, then sign in again.';
-  if (/OBSERVER_IS_PLAYER/.test(m)) return 'This login belongs to a player seat, so it can never see everyone’s secrets. Use a separate observer account.';
+  const acct = signedInAs || 'This account';
+  if (/NOT_OBSERVER/.test(m)) return `${acct} signed in, but is not on the observer list. Put that exact email in step 3 of observer.sql, run it, and check the verdict column.`;
+  if (/OBSERVER_IS_PLAYER/.test(m)) return `${acct} is linked to a player seat, so it can never see everyone’s secrets. Use a separate observer account.`;
   if (/observer_snapshot|does not exist|Could not find the function/i.test(m)) return 'The observer screen is not installed yet. Run observer.sql in the Supabase SQL Editor.';
   return m;
 }
@@ -739,48 +716,36 @@ function push(e) {
 }
 
 /* The first refresh of a week seeds from what is already there, using the
-   real submission times, so opening the page mid-session still shows the
-   full story. After that, every change is announced as it happens. */
+   real submission times. After that, every change is announced live. */
 function track() {
   const r = round();
   const ph = phase();
   if (trackRound !== r) { prevActs = null; prevVotes = null; seenBuys = null; trackRound = r; }
-  if (prevPhase && prevPhase !== ph) {
-    push({ kind: 'phase', html: `Phase moved to <b>${esc(PHASE_LABEL[ph] ?? ph)}</b>` });
-  }
+  if (prevPhase && prevPhase !== ph) push({ kind: 'phase', html: `Phase moved to <b>${esc(PHASE_LABEL[ph] ?? ph)}</b>` });
   prevPhase = ph;
 
-  /* Mafia kill picks */
   const kills = actions.filter((a) => a.type === E.ACTION.MAFIA_KILL_VOTE);
   const actNow = new Map(kills.map((a) => [a.actorId, a.targetId]));
+  const killLine = (actor, target) => `${who(actor)} <i>(Mafia)</i> chose to kill <b>${esc(nameOf(target))}</b>`;
   if (prevActs === null) {
-    for (const a of kills) {
-      push({ kind: 'kill', at: a.submittedAt || undefined,
-             html: `${who(a.actorId)} <i>(Mafia)</i> chose to kill <b>${esc(nameOf(a.targetId))}</b>` });
-    }
+    for (const a of kills) push({ kind: 'kill', at: a.submittedAt, html: killLine(a.actorId, a.targetId) });
   } else {
     for (const [actor, target] of actNow) {
       const before = prevActs.get(actor);
-      if (!before) push({ kind: 'kill', html: `${who(actor)} <i>(Mafia)</i> chose to kill <b>${esc(nameOf(target))}</b>` });
+      if (!before) push({ kind: 'kill', html: killLine(actor, target) });
       else if (before !== target) push({ kind: 'kill',
         html: `${who(actor)} <i>(Mafia)</i> switched their kill from ${esc(nameOf(before))} to <b>${esc(nameOf(target))}</b>` });
     }
-    for (const [actor] of prevActs) {
-      if (!actNow.has(actor)) push({ kind: 'kill', html: `${who(actor)} <i>(Mafia)</i> withdrew their kill pick` });
-    }
+    for (const [actor] of prevActs) if (!actNow.has(actor)) push({ kind: 'kill', html: `${who(actor)} <i>(Mafia)</i> withdrew their kill pick` });
   }
   prevActs = actNow;
 
-  /* Votes */
   const voteNow = new Map(ballots.map((b) => [b.voterId, b.targetId]));
   const sab = sabotage();
   const silencedId = sab && sab.status === 'ACTIVE' ? sab.targetId : null;
   const tag = (id) => (id === silencedId ? ' <i>(sabotaged — will not count)</i>' : '');
   if (prevVotes === null) {
-    for (const b of ballots) {
-      push({ kind: 'vote', at: b.at || undefined,
-             html: `${who(b.voterId)} voted for <b>${esc(nameOf(b.targetId))}</b>${tag(b.voterId)}` });
-    }
+    for (const b of ballots) push({ kind: 'vote', at: b.at, html: `${who(b.voterId)} voted for <b>${esc(nameOf(b.targetId))}</b>${tag(b.voterId)}` });
   } else {
     for (const [voter, target] of voteNow) {
       const before = prevVotes.get(voter);
@@ -788,20 +753,16 @@ function track() {
       else if (before !== target) push({ kind: 'vote',
         html: `${who(voter)} switched their vote from ${esc(nameOf(before))} to <b>${esc(nameOf(target))}</b>${tag(voter)}` });
     }
-    for (const [voter] of prevVotes) {
-      if (!voteNow.has(voter)) push({ kind: 'vote', html: `${who(voter)} took their vote back` });
-    }
+    for (const [voter] of prevVotes) if (!voteNow.has(voter)) push({ kind: 'vote', html: `${who(voter)} took their vote back` });
   }
   prevVotes = voteNow;
 
-  /* Shop requests. What happens next (accepted / refused) arrives through
-     the console's own log. */
   if (seenBuys === null) seenBuys = new Set();
   for (const p of purchases) {
     if (seenBuys.has(p.id)) continue;
     seenBuys.add(p.id);
     const item = ITEM_LABEL[p.reward_type] ?? p.reward_type;
-    push({ kind: p.reward_type === 'SABOTAGE' ? 'sab' : 'shop', at: p.created_at || undefined,
+    push({ kind: p.reward_type === 'SABOTAGE' ? 'sab' : 'shop', at: p.created_at,
            html: `${who(p.player_id)} <i>(${esc(roleOf(p.player_id))})</i> asked to buy <b>${esc(item)}</b>${
              p.target_id ? ` on ${esc(nameOf(p.target_id))}` : ''}` });
   }
@@ -815,7 +776,7 @@ function paint() {
   paintSyncErr();
   paintProgress();
   paintHero();
-  paintWeek();
+  $('weekCards').innerHTML = ph === 'CLOSED' ? '' : [nightCard(), minigameCard(), masterCard(), shopCard(), voteCard()].join('');
   paintDossier();
   paintBalance();
   paintTimeline();
@@ -839,7 +800,6 @@ function paintProgress() {
 }
 
 /* ------------------------------------------------------- projections -- */
-/** What the night would do if it were resolved right now. */
 function nightProjection() {
   const valid = actions.filter((a) => {
     const actor = byId(a.actorId), target = byId(a.targetId);
@@ -861,7 +821,6 @@ function nightLine(np) {
   return 'The Mafia have not picked anyone yet.';
 }
 
-/** What the vote would do if the clock ran out right now. */
 const voteProjection = () => E.resolveVote(gameState(),
   ballots.map((b) => ({ voterId: b.voterId, targetId: b.targetId })), blob.currentMaster || {});
 
@@ -879,14 +838,11 @@ function heroLine() {
         : 'No crew yet.';
     }
     case 'ATTENDANCE': {
-      const here = present().length;
       const away = players.filter((p) => E.isAlive(p) && p.attendanceStatus === E.ATTENDANCE.DORMANT).length;
-      return `<b>${here}</b> here this week${away ? `, <b>${away}</b> away` : ''}.`;
+      return `<b>${present().length}</b> here this week${away ? `, <b>${away}</b> away` : ''}.`;
     }
-    case 'HIDDEN_ACTIONS': {
-      const mafia = present().filter(isMafia);
-      return `<b>${np.valid.length} of ${mafia.length}</b> Mafia have picked. ${nightLine(np)}`;
-    }
+    case 'HIDDEN_ACTIONS':
+      return `<b>${np.valid.length} of ${present().filter(isMafia).length}</b> Mafia have picked. ${nightLine(np)}`;
     case 'MINIGAME': {
       const victim = !blob.pendingPublicEvent && np.target && !np.blocked
         ? ` ${B(np.target)} is playing &mdash; and has no idea they’ve already been killed.` : '';
@@ -923,10 +879,7 @@ function heroLine() {
         ? `${B(res.eliminated)} was ejected. They were <b class="m">${esc(ROLE_LABEL[res.revealedRole] ?? res.revealedRole)}</b>.`
         : res.tie ? 'The vote was tied. Nobody was ejected.' : 'Nobody was ejected.';
     }
-    case 'FINISHED':
-      return blob.game.winner === 'GOOD' ? 'The town wins. Every Mafia has been found.' : 'The Mafia win. They took over the ship.';
-    default:
-      return '';
+    default: return '';
   }
 }
 
@@ -935,7 +888,7 @@ function paintHero() {
   const host = $('hero');
   host.className = 'ph-' + (PHASE_STYLE[ph] ?? 'closed');
   if (ph === 'FINISHED') {
-    host.innerHTML = `<div class="card now"><div class="winner ${blob.game.winner === 'GOOD' ? 'good' : 'bad'}">
+    host.innerHTML = `<div class="card now end"><div class="winner ${blob.game.winner === 'GOOD' ? 'good' : 'bad'}">
       <div class="wk">Game over &middot; after ${round()} week${round() === 1 ? '' : 's'}</div>
       <h3>${blob.game.winner === 'GOOD' ? 'The town wins' : 'The Mafia win'}</h3></div></div>`;
     return;
@@ -952,14 +905,6 @@ function paintHero() {
 }
 
 /* ------------------------------------------------------- week cards --- */
-function paintWeek() {
-  const ph = phase();
-  const html = ph === 'CLOSED' ? '' : [
-    nightCard(), minigameCard(), masterCard(), shopCard(), voteCard()
-  ].join('');
-  $('weekCards').innerHTML = html;
-}
-
 const head = (title, live, extra = '') =>
   `<h2>${title}${live ? ' <span class="livetag">Live</span>' : ''}<span class="sp"></span>${extra}</h2>`;
 
@@ -971,12 +916,11 @@ function nightCard() {
   const picks = new Map(actions.filter((a) => a.type === E.ACTION.MAFIA_KILL_VOTE).map((a) => [a.actorId, a]));
   const rows = mafia.length ? mafia.map((m) => {
     const a = picks.get(m.id);
-    const away = !E.isPresent(m);
     return `<div class="row mafia">${crew(m.id)}<span class="n">${esc(m.displayName)}</span>
       <span class="arrow">&rarr;</span>
       ${a ? `${crew(a.targetId)}<span class="n grow">${esc(nameOf(a.targetId))}</span>
              ${a.source === 'ADMIN' ? '<span class="pill">Entered by Hunter</span>' : ''}`
-          : `<span class="grow vnone">${away ? 'Away this week' : 'Still choosing…'}</span>`}
+          : `<span class="grow vnone">${E.isPresent(m) ? 'Still choosing…' : 'Away this week'}</span>`}
     </div>`;
   }).join('') : '<p class="empty">No living Mafia.</p>';
   const tallyHtml = Object.keys(np.tally).length
@@ -1014,7 +958,7 @@ function minigameCard() {
         <span class="pill cy">${mg.format === 'TEAM' ? 'Team' : 'Solo'}</span></div>`
       : '<p class="empty">No game launched yet.</p>'}
     ${spin ? `<p class="hint" style="margin:10px 0 0">🎡 ${esc(spin.summary)}</p>` : ''}
-    <div class="sub" style="margin-top:16px">Winners</div>
+    <div class="sub">Winners</div>
     ${winners.length ? winners.map((id) => {
       const p = byId(id);
       const spirit = p && p.lifeStatus === E.LIFE.SPIRIT;
@@ -1046,21 +990,21 @@ function shopCard() {
   const live = isNow('REWARDS');
   const statusPill = (s) => s === 'ACCEPTED' ? '<span class="pill on">Bought</span>'
     : s === 'REJECTED' ? '<span class="pill no">Refused</span>' : '<span class="pill wait">Waiting</span>';
-  const bought = audit.filter((a) => a.round === round() && a.eventType === 'PURCHASE');
   /* Purchases Hunter entered by hand never went through the request table,
      so they only exist in the log. Show them too. */
-  const manual = bought.filter((a) => !purchases.some((p) => p.status === 'ACCEPTED' && p.player_id === a.actorId));
+  const manual = audit.filter((a) => a.round === round() && a.eventType === 'PURCHASE'
+    && !purchases.some((p) => p.status === 'ACCEPTED' && p.player_id === a.actorId));
   return `<div class="card${live ? ' now' : ''}">
     ${head('🛒 The shop', live, '<span class="secret">Secret</span>')}
-    ${purchases.length ? purchases.map((p) => `<div class="row${isMafia(byId(p.player_id)) ? ' mafia' : ''}">
+    ${purchases.map((p) => `<div class="row${isMafia(byId(p.player_id)) ? ' mafia' : ''}">
         ${crew(p.player_id)}
         <div class="grow"><div class="n">${esc(nameOf(p.player_id))} <span class="d">(${esc(roleOf(p.player_id))})</span></div>
           <div class="d">${esc(ITEM_LABEL[p.reward_type] ?? p.reward_type)}${p.target_id ? ` &rarr; <b>${esc(nameOf(p.target_id))}</b>` : ''}${
             p.status === 'REJECTED' && p.decided_reason ? ` &middot; ${esc(p.decided_reason)}` : ''}</div></div>
-        ${statusPill(p.status)}</div>`).join('')
-      : (manual.length ? '' : `<p class="empty">${live ? 'Nobody has asked for anything yet.' : 'Nothing bought this week.'}</p>`)}
-    ${manual.length ? `${purchases.length ? '<div class="sub" style="margin-top:14px">Entered by Hunter</div>' : ''}${manual.map((a) =>
+        ${statusPill(p.status)}</div>`).join('')}
+    ${manual.length ? `${purchases.length ? '<div class="sub">Entered by Hunter</div>' : ''}${manual.map((a) =>
         `<div class="row">${a.actorId ? crew(a.actorId) : ''}<span class="grow d">${esc(a.summary)}</span><span class="pill on">Bought</span></div>`).join('')}` : ''}
+    ${!purchases.length && !manual.length ? `<p class="empty">${live ? 'Nobody has asked for anything yet.' : 'Nothing bought this week.'}</p>` : ''}
   </div>`;
 }
 
@@ -1205,14 +1149,15 @@ function personCard(p) {
   const spirit = p.lifeStatus === E.LIFE.SPIRIT;
   const left = !E.isProfileActive(p);
   const away = !spirit && !left && p.attendanceStatus === E.ATTENDANCE.DORMANT;
-  const role = `<span class="rb ${isMafia(p) ? 'mafia' : 'civ'}">${esc(ROLE_LABEL[p.role] ?? p.role)}</span>`;
+  const role = `<span class="rb ${isMafia(p) ? 'r-mafia' : 'r-civ'}">${esc(ROLE_LABEL[p.role] ?? p.role)}</span>`;
   const status = left ? '<span class="rb st">Left</span>' : spirit ? '<span class="rb st">Spirit</span>'
     : away ? '<span class="rb away">Away</span>' : '';
   const items = itemChips(p);
-  return `<div class="pc${isMafia(p) && !spirit ? ' mafia' : ''}${spirit ? ' spirit' : ''}${left ? ' left' : ''}">
+  const cls = ['pc', isMafia(p) && !spirit ? 'is-mafia' : '', spirit || left ? 'is-out' : ''].filter(Boolean).join(' ');
+  return `<div class="${cls}">
     <div class="pch">${crew(p.id, spirit || left ? 'ghost' : '')}
       <div class="pcm"><div class="pcn">${esc(p.displayName)}</div><div class="pct">${role}${status}</div></div></div>
-    <div class="stats">
+    <div class="mstats">
       <span class="ms" title="Reward tokens"><svg viewBox="0 0 36 36"><use href="#coin"/></svg>${p.rewardTokens}</span>
       ${spirit || p.spiritPoints ? `<span class="ms" title="Spirit points"><svg viewBox="0 0 36 36"><use href="#ghost"/></svg>${p.spiritPoints}</span>` : ''}
     </div>
@@ -1224,15 +1169,17 @@ function paintDossier() {
   const host = $('dossier');
   if (!players.length) { host.innerHTML = ''; return; }
   const sort = (a, b) => a.displayName.localeCompare(b.displayName);
+  /* Group classes are g-* on purpose: a bare "crew" class is the avatar
+     style (36px wide) and squashed the whole group. */
   const groups = [
     ['The Mafia', 'mafia', players.filter((p) => E.isAlive(p) && isMafia(p)).sort(sort)],
-    ['The crew', 'crew', players.filter((p) => E.isAlive(p) && !isMafia(p)).sort(sort)],
-    ['Spirits', 'spirit', players.filter(E.isSpirit).sort(sort)],
-    ['Left the game', 'left', players.filter((p) => !E.isProfileActive(p)).sort(sort)]
+    ['The crew', 'town', players.filter((p) => E.isAlive(p) && !isMafia(p)).sort(sort)],
+    ['Spirits', 'spirits', players.filter(E.isSpirit).sort(sort)],
+    ['Left the game', 'gone', players.filter((p) => !E.isProfileActive(p)).sort(sort)]
   ].filter(([, , list]) => list.length);
   host.innerHTML = `<div class="card">
     <h2>👥 Every crewmate <span class="sp"></span><span class="secret">Secret</span></h2>
-    ${groups.map(([title, cls, list]) => `<div class="grp ${cls}">
+    ${groups.map(([title, cls, list]) => `<div class="grp g-${cls}">
       <div class="grp-h">${title} <span class="cnt">${list.length}</span></div>
       <div class="pcs">${list.map(personCard).join('')}</div></div>`).join('')}
   </div>`;
@@ -1246,17 +1193,17 @@ function paintBalance() {
   const { activeMafia, activeGood } = E.checkEndgame(gameState());
   const total = Math.max(1, activeMafia + activeGood);
   const gap = activeGood - activeMafia;
-  const legacy = g.legacyUsed ? 'Used' : g.countdownDisablesLegacy ? 'Switched off' : 'Still available';
+  const legacy = g.legacyUsed ? 'Used' : g.countdownDisablesLegacy ? 'Switched off' : 'Available';
   const tokens = players.filter(E.isAlive).reduce((s, p) => s + (p.rewardTokens || 0), 0);
   host.innerHTML = `<div class="card">
     <h2>⚖️ Balance of power</h2>
     <div class="bal"><span class="m"><span class="big">${activeMafia}</span> Mafia</span>
-      <span class="g">${activeGood} crew <span class="big"></span></span></div>
+      <span class="g">crew <span class="big">${activeGood}</span></span></div>
     <div class="bar"><span class="m" style="width:${(activeMafia / total) * 100}%"></span>
       <span class="g" style="width:${(activeGood / total) * 100}%"></span></div>
     <ul class="facts">
-      <li>Crew lead (Mafia win when it hits 0)<b>${activeMafia === 0 ? 'No Mafia left' : gap <= 0 ? 'Mafia have parity' : `${gap}`}</b></li>
-      <li>Mafia Legacy (one new Mafia if all are caught)<b>${legacy}</b></li>
+      <li>Crew lead (Mafia win at 0)<b>${activeMafia === 0 ? 'No Mafia left' : gap <= 0 ? 'Mafia have parity' : gap}</b></li>
+      <li>Mafia Legacy<b>${legacy}</b></li>
       ${g.countdownEnabled ? `<li>Countdown<b>${g.roundsRemaining ?? '—'} week(s) left</b></li>` : ''}
       <li>Tokens held by living players<b>${tokens}</b></li>
       <li>Here this week<b>${present().length} of ${players.filter(E.isAlive).length} alive</b></li>
@@ -1277,8 +1224,7 @@ function paintTimeline() {
     kind: auditKind(a), round: a.round, at: a.timestamp,
     html: (a.actorId && byId(a.actorId) ? crew(a.actorId, 'mini') : '') + esc(a.summary || prettyType(a.eventType))
   }));
-  const fromLive = liveEvents.map((e) => ({ ...e, key: e.id }));
-  let all = [...fromLive, ...fromLog];
+  let all = [...liveEvents.map((e) => ({ ...e, key: e.id })), ...fromLog];
   if (tlScope === 'week') all = all.filter((e) => e.round === r);
   all.sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0));
   all = all.slice(0, 120);
@@ -1302,7 +1248,6 @@ document.querySelectorAll('[data-scope]').forEach((btn) => {
   };
 });
 
-/* The clocks tick locally every half second; data refreshes on its own loop. */
 setInterval(() => {
   if (phase() !== 'VOTING') return;
   const left = voteLeft();
@@ -1341,7 +1286,11 @@ $('go').onclick = async () => {
     email: $('email').value.trim().toLowerCase(),
     password: $('pw').value
   });
-  if (error) return fail(error.message);
+  if (error) {
+    if (/not confirmed/i.test(error.message)) return fail('That account exists but its email is not confirmed. Run observer.sql with this email - it confirms it for you.');
+    if (/invalid login/i.test(error.message)) return fail('Wrong email or password. Check the account exists under Authentication → Users in Supabase, and reset the password there if unsure.');
+    return fail(error.message);
+  }
   load();
 };
 $('pw').onkeydown = (e) => { if (e.key === 'Enter') $('go').click(); };
