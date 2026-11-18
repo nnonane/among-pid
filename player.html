@@ -1,5 +1,9 @@
 <!DOCTYPE html>
-<!-- mafia v1.4 | player.html | 21 Oct 2026 | visual layer v1.0 (cartoon skin) -->
+<!-- mafia v1.6 | player.html | 18 Nov 2026 | visual layer v1.0 (cartoon skin) -->
+<!-- v1.6: BLIND MAFIA. Mafia no longer see who the other Mafia are. During
+     Hidden actions they see an anonymous tally of who has been picked to be
+     killed (names + vote counts, never who picked them). Needs mafia_blind.sql
+     run once in Supabase. -->
 <!-- v1.4: Temporary Immunity protects the week it is bought (shop text only). -->
 <!--
   v0.7: Doctor and Sheriff retired. Only the Mafia have a night action;
@@ -257,6 +261,14 @@
   .item .d { margin-top: 2px; font-size: 14px; color: var(--muted); }
   .item select { margin: 10px 0 0; min-height: 44px; padding: 8px 40px 8px 12px; background-color: #0c1230; }
   .item .grow { flex: 1 1 auto; }
+  /* Blind Mafia: anonymous kill tally */
+  .ktally { display: grid; gap: 8px; margin: 0 0 16px; }
+  .ktally .who { background: #25060f; }
+  .ktally .kc { flex: 0 0 auto; min-width: 32px; height: 32px; padding: 0 8px; display: grid; place-items: center;
+                font: 700 18px/1 var(--head); color: var(--ink); background: var(--yellow);
+                border: var(--line); border-radius: 999px; }
+  .ktally .who.mine { box-shadow: 0 0 0 3px rgba(74, 222, 128, .35); }
+  .klabel { margin: 0 0 8px; font: 600 15px/1.3 var(--head); color: var(--muted); }
   #inboxCard .item .t { font-family: "Nunito", sans-serif; font-weight: 700; font-size: 16px; }
   /* ------------------------------------------------ discuss & vote board */
   .vtop { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
@@ -502,8 +514,8 @@ let masterAwards = [];       // confirmed public Master awards from game_phase
 let selected = null;        // tile tapped but not yet confirmed
 let sabPick = '';           // Sabotage target chosen in the shop, kept across refreshes
 let myPurchases = [];
-let mafiaPeers = null;      // null = not loaded, [] = genuinely none
-let mafiaError = null;
+let killTally = null;       // anonymous Mafia kill tally: null = not loaded, [] = no picks yet
+let killTallyError = null;
 let inbox = [];
 let busy = false;
 let timer = null;
@@ -558,7 +570,7 @@ function schedule() {
   timer = setTimeout(async () => {
     try { await refresh(); } catch (err) { console.error('[player] refresh failed', err); }
     schedule();
-  }, phase?.phase === 'VOTING' ? 2500 : 6000);
+  }, (phase?.phase === 'VOTING' || phase?.phase === 'HIDDEN_ACTIONS') ? 2500 : 6000);
 }
 /*
   One read of everything that can change underneath the player.
@@ -589,7 +601,7 @@ async function refresh() {
   }
   lastRound = r;
   const [aRes, bRes, pRes, iRes, tRes] = await Promise.all([
-    sb.from('actions').select('*').eq('round', r),
+    sb.from('actions').select('*').eq('round', r).eq('actor_id', me.id),
     sb.from('ballots').select('round, voter_id, target_id').eq('round', r),
     sb.from('purchases').select('*').eq('round', r).order('created_at'),
     sb.from('private_events').select('round, type, body, created_at')
@@ -606,25 +618,29 @@ async function refresh() {
   voteTimer   = tRes.error ? null : ((tRes.data && tRes.data[0]) ?? null);
   myPurchases = (pRes.data ?? []).filter((x) => x.player_id === me.id);
   inbox       = iRes.data ?? [];
-  await loadMafiaPeers();
+  await loadKillTally();
   checkLifeChange();
   paint();
 }
-/* Kept separate so its error is visible rather than inferred. */
-async function loadMafiaPeers() {
-  if (!me || me.role !== 'MAFIA' || me.life_status !== 'ALIVE') {
-    mafiaPeers = null; mafiaError = null;
+/*
+  BLIND MAFIA. A Mafia player never learns who the other Mafia are. During
+  Hidden actions they get an anonymous tally from mafia_kill_tally(): who has
+  been picked and how many picks each has - never who picked them. The
+  database only answers a living Mafia player, and only in Hidden actions.
+  Kept separate so its error is visible rather than inferred.
+*/
+async function loadKillTally() {
+  if (!me || me.role !== 'MAFIA' || me.life_status !== 'ALIVE' || phase?.phase !== 'HIDDEN_ACTIONS') {
+    killTally = null; killTallyError = null;
     return;
   }
-  const { data, error } = await sb.from('mafia_peers')
-    .select('id, display_name, life_status');
+  const { data, error } = await sb.rpc('mafia_kill_tally');
   if (error) {
-    mafiaError = error.message;
-    mafiaPeers = null;
-    return;
+    killTallyError = error.message;
+    return;           // keep the last tally rather than blanking it
   }
-  mafiaError = null;
-  mafiaPeers = (data ?? []).filter((p) => p.id !== me.id);
+  killTallyError = null;
+  killTally = (data ?? []).filter((t) => t && t.target_id);
 }
 /*
   Being killed used to change a heading colour and nothing else, so people
@@ -716,7 +732,7 @@ function paintAction(host) {
   }
   const label = {
     MAFIA_KILL_VOTE: ['Choose your kill target',
-      'Every active Mafia picks one. Majority decides; a tie is broken at random.']
+      'Every active Mafia picks one in secret. You can see who has been picked, but never who picked them. Majority decides; a tie is broken at random.']
   }[type];
   const pool = roster.filter((r) => r.life_status === 'ALIVE' && r.id !== me.id);
   const done = !!myAction;
@@ -726,11 +742,37 @@ function paintAction(host) {
     ${done ? `<div class="ok">Submitted &mdash; you chose
       <strong>${esc(nameOf(myAction.target_id))}</strong>.
       You can change it until Hunter moves on.</div>` : ''}
+    ${killTallyHtml()}
     <label>Target</label>
     <select id="aT">${optionList(pool, myAction?.target_id)}</select>
     <button id="aGo">${done ? 'Update my choice' : 'Submit'}</button>
     <div id="aMsg"></div>`);
   $('aGo').onclick = () => submitAction(type);
+}
+/*
+  The anonymous tally: who has been picked and how many picks each has.
+  Never who picked them, so the Mafia cannot work out who each other are.
+*/
+function killTallyHtml() {
+  if (killTallyError) {
+    return `<div class="note">Could not load the Mafia's picks: ${esc(killTallyError)}.
+      Your own pick still counts. Tell Hunter (mafia_blind.sql may not be installed).</div>`;
+  }
+  if (killTally === null) return '<p class="hint">Loading the Mafia&rsquo;s picks&hellip;</p>';
+  if (!killTally.length) {
+    return '<div class="klabel">Picked so far</div><p class="hint">Nobody has been picked yet.</p>';
+  }
+  const mine = myAction?.target_id ?? null;
+  const rows = [...killTally]
+    .sort((a, b) => (b.votes - a.votes) || String(nameOf(a.target_id)).localeCompare(String(nameOf(b.target_id))))
+    .map((t) => `<div class="who${t.target_id === mine ? ' mine' : ''}">
+        ${crew(t.target_id)}
+        <span class="n">${esc(t.display_name || nameOf(t.target_id))}</span>
+        ${t.target_id === mine ? '<span class="you">Your pick</span>' : ''}
+        <span class="kc" aria-label="${t.votes} pick${t.votes === 1 ? '' : 's'}">${t.votes}</span>
+      </div>`).join('');
+  return `<div class="klabel">Picked so far <span class="pill secret">Anonymous</span></div>
+    <div class="ktally">${rows}</div>`;
 }
 async function submitAction(type) {
   const target = $('aT').value;
@@ -986,26 +1028,12 @@ function paintMafia() {
   if (me.role !== 'MAFIA' || me.life_status !== 'ALIVE') {
     return void (host.innerHTML = '');
   }
-  /* An error is not the same as an empty list, and telling a Mafia member
-     they are alone when they are not is a game-deciding lie. */
-  if (mafiaError) {
-    return void (host.innerHTML = card('mafia', `
-      <h2>Your Mafia</h2>
-      <div class="err">Could not load your partners: ${esc(mafiaError)}<br>
-        Do not assume you are alone &mdash; ask Hunter.</div>`));
-  }
-  if (mafiaPeers === null) {
-    return void (host.innerHTML = card('mafia',
-      '<h2>Your Mafia</h2><p class="hint">Loading&hellip;</p>'));
-  }
+  /* Blind Mafia: partners are never listed. */
   host.innerHTML = card('mafia', `
-    <h2>Your Mafia <span class="pill secret">Secret</span></h2>
-    ${mafiaPeers.length
-      ? '<div class="people">' + mafiaPeers.map((p) => `<div class="who${p.life_status === 'ALIVE' ? '' : ' out'}">
-          ${crew(p.id)}<span class="n">${esc(p.display_name)}</span>
-          ${p.life_status === 'ALIVE' ? '' : '<span class="status">Out</span>'}
-        </div>`).join('') + '</div>'
-      : '<p class="hint">You are the only Mafia left.</p>'}`);
+    <h2>You are Mafia <span class="pill secret">Secret</span></h2>
+    <p class="hint" style="margin:0">You do not know who the other Mafia are, and they do not
+      know you. When choosing a kill you will see who has been picked, but not who picked them.
+      Trust no one.</p>`);
 }
 function paintInbox() {
   const host = $('inboxCard');

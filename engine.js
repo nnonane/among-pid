@@ -1,4 +1,10 @@
-/* mafia v1.4 | engine.js | 21 Oct 2026 */
+/* mafia v1.6 | engine.js | 18 Nov 2026 */
+/*
+  v1.6: BLIND MAFIA. A Mafia player no longer sees who the other Mafia are.
+  visibleStateFor shows every viewer their own role only. The Mafia's kill
+  picks are shared as an anonymous tally (target + count) by the database
+  function mafia_kill_tally() - see mafia_blind.sql. No rule changed.
+*/
 /*
   v0.2: Doctor and Sheriff retired. Every non-Mafia player is a Civilian.
   The only night action is the Mafia kill; Temporary Immunity is the only
@@ -621,15 +627,14 @@ export function visibleStateFor(state, viewer) {
     ...state,
     players: state.players.map((p) => {
       const own = p.id === viewer.id;
-      const mafiaPeer =
-        viewer.role === ROLE.MAFIA && p.role === ROLE.MAFIA && isAlive(viewer);
+      // Blind Mafia (v1.6): nobody, Mafia included, sees anyone's role but their own.
       return {
         id: p.id,
         displayName: p.displayName,
         lifeStatus: p.lifeStatus,
         attendanceStatus: p.attendanceStatus,
-        role: own || mafiaPeer ? p.role : null,
-        alignment: own || mafiaPeer ? p.alignment : null,
+        role: own ? p.role : null,
+        alignment: own ? p.alignment : null,
         rewardTokens: own ? p.rewardTokens : null,
         spiritPoints: own ? p.spiritPoints : null,
         inventory: own ? p.inventory : null

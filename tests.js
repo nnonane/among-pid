@@ -1,4 +1,4 @@
-/* mafia v1.4 | tests.js | 21 Oct 2026 */
+/* mafia v1.6 | tests.js | 18 Nov 2026 */
 /* Disposable test harness. Runs in Node or in the browser via tests.html. */
 import * as E from './engine.js';
 import { Store, MemoryAdapter, blankState, newPlayer, newInventoryItem } from './store.js';
@@ -569,12 +569,20 @@ test('a Civilian cannot see other roles', () => {
   eq(view.players.find(p => p.id === 'm1').role, null);
   eq(view.players.find(p => p.id === 'c1').role, E.ROLE.CIVILIAN, 'own role visible');
 });
-test('Mafia see each other but no one else', () => {
+test('Mafia cannot see each other (blind Mafia)', () => {
   const s = makeState(baseCast);
   const viewer = s.players.find(p => p.id === 'm1');
   const view = E.visibleStateFor(s, viewer);
-  eq(view.players.find(p => p.id === 'm2').role, E.ROLE.MAFIA);
+  eq(view.players.find(p => p.id === 'm2').role, null, 'partner role hidden');
+  eq(view.players.find(p => p.id === 'm2').alignment, null, 'partner alignment hidden');
   eq(view.players.find(p => p.id === 'c4').role, null);
+  eq(view.players.find(p => p.id === 'm1').role, E.ROLE.MAFIA, 'own role visible');
+});
+test('Mafia views expose no kill picks', () => {
+  const s = makeState(baseCast);
+  s.currentActions = [{ actorId: 'm2', type: E.ACTION.MAFIA_KILL_VOTE, targetId: 'c1' }];
+  const view = E.visibleStateFor(s, s.players.find(p => p.id === 'm1'));
+  eq(view.currentActions, undefined, 'who picked whom stays hidden');
 });
 test('player views expose no actions or audit', () => {
   const s = makeState(baseCast);
