@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<!-- among pid imposter v2.0 | index.html | 25 Nov 2026 | admin console -->
+<!--
+  THE ADMIN CONSOLE - IMPOSTER (final week).
+  Replaces the Mafia console (ui.js, engine.js, store.js and friends).
+  Self-contained: one file, talks to Supabase through imposter.sql only.
+
+  Sign in with your admin account. Everything here runs through two database
+  calls: imp_admin_state() to read, imp_control() for every button. Both
+  refuse any account that is not in the admins table.
+
+  Secrets (who the imposter is, their question) are BLURRED by default in
+  case you screen share. Press H or "Show secrets" to see them.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Among PID — Imposter Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600;700&family=Nunito:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #0a0e22;
+    --panel: #1c2650;
+    --panel-2: #131a3d;
+    --text: #eef2ff;
+    --muted: #b7c3e6;
+    --faint: #8e9bc4;
+    --red: #ff4d4d;
+    --cyan: #38d9f5;
+    --yellow: #ffd23f;
+    --green: #4ade80;
+    --purple: #a98bff;
+    --line: 3px solid var(--ink);
+    --drop: 0 6px 0 var(--ink);
+    --drop-sm: 0 4px 0 var(--ink);
+    --o2: -2px -2px 0 var(--ink), 2px -2px 0 var(--ink), -2px 2px 0 var(--ink), 2px 2px 0 var(--ink),
+          0 -2px 0 var(--ink), 0 2px 0 var(--ink), -2px 0 0 var(--ink), 2px 0 0 var(--ink), 0 4px 0 var(--ink);
+    --o3: -3px -3px 0 var(--ink), 3px -3px 0 var(--ink), -3px 3px 0 var(--ink), 3px 3px 0 var(--ink),
+          0 -3px 0 var(--ink), 0 3px 0 var(--ink), -3px 0 0 var(--ink), 3px 0 0 var(--ink), 0 6px 0 var(--ink);
+    --head: "Fredoka", "Nunito", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { background: #070a1c; }
+  body { margin: 0; min-height: 100vh; color: var(--text); overflow-x: hidden;
+         font: 400 16px/1.5 "Nunito", system-ui, sans-serif; }
+  body::before {
+    content: ""; position: fixed; inset: 0; z-index: -2; pointer-events: none;
+    background:
+      linear-gradient(rgba(5, 7, 22, .55), rgba(5, 7, 22, .55)),
+      url("bg.jpg") center / cover no-repeat,
+      radial-gradient(1px 1px at 12% 18%, #fff 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 72% 12%, #fff 50%, transparent 51%),
+      radial-gradient(2px 2px at 86% 58%, #fff 50%, transparent 51%),
+      radial-gradient(circle at 20% 10%, #2a1f5c 0, transparent 45%),
+      radial-gradient(circle at 85% 80%, #102a5c 0, transparent 50%),
+      #0a0d26;
+  }
+
+  .wrap { max-width: 1320px; margin: 0 auto; padding: 24px 20px 48px; }
+  .wrap.narrow { max-width: 520px; }
+  .hide { display: none !important; }
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 20px; align-items: start; }
+  @media (max-width: 1000px) { .layout { grid-template-columns: 1fr; } }
+
+  .masthead { text-align: center; margin: 4px 0 20px; }
+  h1 { margin: 0; font: 700 44px/1 var(--head); letter-spacing: .04em; text-transform: uppercase;
+       color: #fff; text-shadow: var(--o3); }
+  h1 .accent { color: var(--red); }
+  .mrow { display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 16px;
+          font: 600 15px/1.4 var(--head); color: var(--ink); background: var(--yellow);
+          border: var(--line); border-radius: 999px; box-shadow: var(--drop-sm); }
+  .chip.admin { color: #fff; background: var(--purple); letter-spacing: .06em; text-transform: uppercase; }
+  .chip.stage { background: var(--cyan); }
+  button.chipbtn { display: inline-flex; width: auto; min-height: 0; padding: 4px 16px; margin: 0;
+                   font: 600 15px/1.4 var(--head); color: #fff; background: #2d3970;
+                   border: var(--line); border-radius: 999px; box-shadow: var(--drop-sm); }
+
+  .card { position: relative; min-width: 0; background: var(--panel); border: var(--line);
+          border-radius: 20px; padding: 20px; margin-bottom: 20px; box-shadow: var(--drop); }
+  .card.now { border-color: var(--yellow);
+              box-shadow: 0 0 0 3px rgba(255, 210, 63, .3), 0 0 26px rgba(255, 210, 63, .18), var(--drop); }
+  h2 { margin: 0 0 12px; font: 700 21px/1.2 var(--head); color: #fff; text-shadow: var(--o2);
+       display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  h2 .sp { flex: 1; }
+  h3 { margin: 0 0 8px; font: 700 30px/1.15 var(--head); color: #fff; text-shadow: var(--o2); }
+  p.hint { margin: 0 0 16px; color: var(--muted); font-size: 15px; }
+  .faint { color: var(--faint); font-size: 14px; }
+
+  label { display: block; margin: 0 0 6px; font: 600 15px/1.3 var(--head); color: var(--muted); }
+  input { width: 100%; min-height: 52px; margin: 0 0 16px; padding: 12px 14px;
+          font: 400 16px/1.3 "Nunito", sans-serif; color: var(--text);
+          background: var(--panel-2); border: var(--line); border-radius: 16px; }
+  input:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(56, 217, 245, .35); }
+
+  button { display: block; width: 100%; min-height: 50px; padding: 10px 18px; cursor: pointer;
+           font: 700 17px/1.2 var(--head); letter-spacing: .02em; color: #062530;
+           background: var(--cyan); border: var(--line); border-radius: 16px;
+           box-shadow: 0 5px 0 var(--ink); transition: transform .08s, box-shadow .08s, filter .12s; }
+  button:hover:not(:disabled) { filter: brightness(1.08); }
+  button:active:not(:disabled) { transform: translateY(4px); box-shadow: 0 1px 0 var(--ink); }
+  button:disabled { cursor: not-allowed; color: #8c95b5; background: #343d63; box-shadow: 0 3px 0 var(--ink); }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--yellow); outline-offset: 3px; }
+  button.ghost { color: #fff; background: #2d3970; }
+  button.yellow { background: var(--yellow); color: var(--ink); }
+  button.red { background: var(--red); color: #fff; }
+  button.green { background: var(--green); color: var(--ink); }
+  button.small { width: auto; min-height: 0; padding: 6px 14px; font-size: 14px; box-shadow: 0 3px 0 var(--ink); }
+  .btns { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+  .btns button { width: auto; flex: 1 1 160px; }
+
+  .err, .ok, .note { margin: 0 0 16px; padding: 12px 16px; border-radius: 16px;
+                     border: 3px solid; font-size: 15px; font-weight: 700; }
+  .err  { background: #3d0f1a; border-color: var(--red); color: #ffd2d2; }
+  .ok   { background: #0f3a28; border-color: var(--green); color: #cff8de; }
+  .note { background: #141b42; border-color: var(--yellow); color: #ffe894; }
+
+  .crew { display: block; width: 36px; height: 36px; flex: 0 0 auto; overflow: visible; }
+  .crew.mini { display: inline-block; width: 18px; height: 18px; vertical-align: -4px; margin-right: 4px; }
+  .crew.big { width: 80px; height: 80px; }
+
+  .pill { display: inline-block; padding: 2px 12px; white-space: nowrap; font: 600 13px/1.4 var(--head);
+          border: 2px solid var(--ink); border-radius: 999px; background: #3a4266; color: #d7ddf3; text-shadow: none; }
+  .pill.on { background: var(--green); color: var(--ink); }
+  .pill.wait { background: var(--yellow); color: var(--ink); }
+  .pill.red { background: var(--red); color: #fff; }
+  .pill.cy { background: var(--cyan); color: var(--ink); }
+
+  /* Secrets: blurred until shown. */
+  body.hidesec .sec { filter: blur(9px); user-select: none; }
+
+  /* ---------------------------------------------------------- control */
+  .ctl-top { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .ctl-top .grow { flex: 1; min-width: 220px; }
+  .stagek { font: 600 14px/1.3 var(--head); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+  .clock { flex: 0 0 auto; padding: 8px 18px; font: 700 64px/1 var(--head); font-variant-numeric: tabular-nums;
+           color: var(--yellow); text-shadow: var(--o2); background: #070a1c; border: var(--line);
+           border-radius: 20px; box-shadow: var(--drop-sm); }
+  .clock.done { color: var(--red); }
+  .clock.paused { color: #9aa4c4; }
+  .clocknote { text-align: center; margin-top: 6px; font: 600 13px/1.3 var(--head); color: var(--faint); }
+  .secbox { display: flex; align-items: center; gap: 12px; margin-top: 16px; padding: 12px 14px;
+            background: #2a0914; border: var(--line); border-radius: 16px; }
+  .secbox .k { font: 600 12px/1.3 var(--head); letter-spacing: .1em; text-transform: uppercase; color: #ff8a8a; }
+  .secbox .v { font: 700 18px/1.3 var(--head); color: #fff; overflow-wrap: anywhere; }
+
+  /* ------------------------------------------------------------ board */
+  .vboard { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin: 4px 0 16px; }
+  .vtile { position: relative; min-width: 0; padding: 10px; background: var(--panel-2); border: var(--line);
+           border-radius: 16px; box-shadow: var(--drop-sm); }
+  .vtile.lead { border-color: var(--yellow); background: #2b2a45;
+                box-shadow: 0 0 0 3px rgba(255, 210, 63, .35), 0 0 18px rgba(255, 210, 63, .35), var(--drop-sm); }
+  .vtile.imp { border-color: var(--red); }
+  .vhead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .vmeta { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+  .vtags { display: flex; flex-wrap: wrap; gap: 4px; }
+  .vhead .crew { width: 34px; height: 34px; }
+  .vn { max-width: 100%; font: 600 15px/1.2 var(--head); overflow-wrap: anywhere; }
+  .vtick { padding: 1px 8px; font: 600 12px/1.4 var(--head); color: var(--ink); background: var(--green);
+           border: 2px solid var(--ink); border-radius: 999px; }
+  .vtick.red { background: var(--red); color: #fff; }
+  .vc { position: absolute; top: -10px; right: -8px; min-width: 32px; padding: 0 6px; height: 32px; display: grid;
+        place-items: center; font: 700 18px/1 var(--head); color: var(--ink); background: var(--yellow);
+        border: var(--line); border-radius: 999px; }
+  .vc:empty { display: none; }
+  .vchips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .vchip { max-width: 100%; padding: 2px 8px 2px 4px; font: 700 13px/1.4 "Nunito", sans-serif; color: #dfe5fa;
+           background: #2a3463; border: 2px solid var(--ink); border-radius: 999px; overflow: hidden;
+           text-overflow: ellipsis; white-space: nowrap; }
+  .vnone { font-size: 14px; font-style: italic; color: var(--faint); }
+  .waiting { margin: 0; font-size: 15px; color: var(--muted); }
+  .waiting strong { color: #fff; }
+
+  /* ----------------------------------------------------------- rounds */
+  .rnd { padding: 14px; margin: 0 0 12px; background: var(--panel-2); border: var(--line); border-radius: 16px; }
+  .rnd:last-child { margin-bottom: 0; }
+  .rnd.cur { border-color: var(--yellow); background: #24233f; }
+  .rh { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .rh b { font: 700 18px/1.2 var(--head); }
+  .rh .sp { flex: 1; }
+  .ql { margin-top: 8px; font: 600 12px/1.3 var(--head); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+  .ql.imp { color: #ff8a8a; }
+  .qv { font: 600 15px/1.35 "Nunito", sans-serif; color: #fff; overflow-wrap: anywhere; }
+  .rnd .err { margin: 10px 0 0; font-size: 13px; padding: 8px 12px; }
+
+  /* ----------------------------------------------------------- winner */
+  .winrow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .wnow { margin: 0 0 14px; padding: 14px; text-align: center; border: var(--line); border-radius: 16px;
+          font: 700 22px/1.2 var(--head); color: #fff; text-shadow: var(--o2); }
+  .wnow.bad { background: #b3182f; }
+  .wnow.good { background: #16784a; }
+  .wnow.none { background: var(--panel-2); color: var(--faint); font-size: 16px; text-shadow: none; }
+
+  .foot { margin-top: 12px; text-align: center; font-size: 14px; color: var(--muted); }
+  .outwrap { max-width: 400px; margin: 8px auto 0; }
+</style>
+</head>
+<body class="hidesec">
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="crew" viewBox="0 0 64 64">
+    <path d="M31 9 L29 3" stroke="#0a0e22" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="28.5" cy="3" r="2.6" style="fill:var(--c)" stroke="#0a0e22" stroke-width="2"/>
+    <rect x="7" y="27" width="13" height="21" rx="5" style="fill:var(--c)" stroke="#0a0e22" stroke-width="3"/>
+    <rect x="7" y="27" width="13" height="21" rx="5" fill="#000" opacity=".22"/>
+    <path d="M18 31 C18 15 25 9 35 9 C47 9 54 16 54 31 L54 52 C54 57 52 59 48 59 L43 59 C40 59 39 57 39 54 L39 51 L33 51 L33 54 C33 57 32 59 29 59 L24 59 C20 59 18 57 18 52 Z" style="fill:var(--c)" stroke="#0a0e22" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M47 13 C51 17 52 23 52 31 L52 51 C52 55 51 57 48 57 L44 57 C42 57 41 56 41 53 L41 49 C46 48 49 43 49 36 Z" fill="#000" opacity=".18"/>
+    <rect x="31" y="18" width="26" height="15" rx="7.5" fill="#a8ecfb" stroke="#0a0e22" stroke-width="3"/>
+    <rect x="31" y="26" width="26" height="7" rx="3.5" fill="#5cc3dc" opacity=".6"/>
+    <rect x="41" y="21" width="11" height="4" rx="2" fill="#fff" opacity=".9"/>
+  </symbol>
+</svg>
+
+<div class="wrap narrow" id="wrap">
+  <header class="masthead">
+    <h1>Among <span class="accent">PID</span></h1>
+    <div class="mrow">
+      <span class="chip admin">Imposter &middot; Admin</span>
+      <span class="chip hide" id="roundChip"></span>
+      <span class="chip stage hide" id="stageChip"></span>
+      <button class="chipbtn hide" id="secBtn" type="button" title="Shortcut: H">Show secrets</button>
+    </div>
+  </header>
+
+  <div class="card" id="loginCard">
+    <h2>Admin sign in</h2>
+    <p class="hint">Use your admin account. Only accounts in the admins table can run the game.</p>
+    <div id="err"></div>
+    <label for="email">Email</label>
+    <input id="email" type="email" autocomplete="username">
+    <label for="pw">Password</label>
+    <input id="pw" type="password" autocomplete="current-password">
+    <button id="go">Sign in</button>
+  </div>
+
+  <div class="hide" id="app">
+    <div id="syncErr"></div>
+    <div class="layout">
+      <main>
+        <div id="control"></div>
+        <div id="board"></div>
+      </main>
+      <aside>
+        <div id="winner"></div>
+        <div id="rounds"></div>
+        <div class="card">
+          <h2>Reset whole game</h2>
+          <p class="hint">Back to before round 1. Clears every vote and the result banner.
+            Questions and players are untouched.</p>
+          <button class="red" id="resetGame" type="button">Reset whole game</button>
+        </div>
+      </aside>
+    </div>
+    <div class="outwrap">
+      <div class="foot" id="who"></div>
+      <button class="ghost" id="out" type="button">Sign out</button>
+      <div class="foot" id="foot"></div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+const URL = 'https://ashjitdpilxwcfhxamni.supabase.co';
+const KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFzaGppdGRwaWx4d2NmaHhhbW5pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwNDAxOTEsImV4cCI6MjEwNTYxNjE5MX0.wWTdrocCPlOWWN5CwTVi--OgWuVBEc99zWxWfVE_Gqk';
+
+/* Own storage key, so this never signs anyone out of the player page. */
+const sb = createClient(URL, KEY, { auth: { storageKey: 'ampid-imposter-admin', persistSession: true } });
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g,
+  (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const CREW = ['#ff5a5a','#4d8dff','#34d27b','#ff7ac8','#ff9a3c','#ffd23f','#a98bff','#38d9f5','#b6f04a','#f2f4ff','#c7844a','#9aa4bc'];
+const crew = (id, cls = '') => { let h = 5381; for (const ch of String(id ?? '')) h = ((h * 33) ^ ch.charCodeAt(0)) >>> 0;
+  return `<svg class="crew ${cls}" style="--c:${CREW[h % CREW.length]}" viewBox="0 0 64 64" aria-hidden="true"><use href="#crew"/></svg>`; };
+
+const STAGE_LABEL = { LOBBY: 'Not started', QUESTION: 'Question out', VOTING: 'Voting', REVEAL: 'Revealed' };
+
+/* -------------------------------------------------------------- state -- */
+let st = null;
+let skew = 0;
+let busy = false;
+let timer = null;
+let syncErr = '';
+let signedInAs = '';
+let hideSec = sessionStorage.getItem('ampid-imp-sec') !== 'show';
+
+const nameOf = (id) => st?.roster?.find((p) => p.id === id)?.name ?? 'someone';
+const fmtClock = (sec) => `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
+const curRound = () => (st?.rounds || []).find((r) => r.round_no === st.round) || null;
+const roundOf = (n) => (st?.rounds || []).find((r) => r.round_no === n) || null;
+const inProgress = () => st && (st.stage === 'QUESTION' || st.stage === 'VOTING');
+
+function voteLeft() {
+  if (!st || st.stage !== 'VOTING') return null;
+  if (st.ends_at) return Math.max(0, Math.ceil((Date.parse(st.ends_at) - (Date.now() + skew)) / 1000));
+  return Math.max(0, st.remaining_seconds || 0);
+}
+const clockRunning = () => !!st?.ends_at;
+
+function tally() {
+  const by = {};
+  for (const v of st.votes || []) (by[v.target_id] ||= []).push(v.voter_id);
+  const top = Math.max(0, ...Object.values(by).map((a) => a.length));
+  const leaders = top ? Object.keys(by).filter((id) => by[id].length === top) : [];
+  return { by, top, leaders, voted: new Set((st.votes || []).map((v) => v.voter_id)) };
+}
+
+/* --------------------------------------------------------------- load -- */
+async function load() {
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) return;
+  signedInAs = user.email || '';
+  $('go').disabled = true;
+  const ok = await refresh(true);
+  $('go').disabled = false;
+  if (!ok) return;
+  $('loginCard').classList.add('hide');
+  $('app').classList.remove('hide');
+  $('wrap').classList.remove('narrow');
+  ['roundChip', 'stageChip', 'secBtn'].forEach((id) => $(id).classList.remove('hide'));
+  $('who').textContent = signedInAs ? `Signed in as ${signedInAs}` : '';
+  applySec();
+  schedule();
+}
+
+function schedule() {
+  clearTimeout(timer);
+  timer = setTimeout(async () => {
+    try { await refresh(); } catch (err) { console.error('[admin] refresh failed', err); }
+    schedule();
+  }, 2000);
+}
+
+async function refresh(first = false) {
+  if (busy && !first) return true;
+  const { data, error } = await sb.rpc('imp_admin_state');
+  if (error) {
+    const msg = explain(error.message);
+    if (first) { await sb.auth.signOut(); fail(msg); return false; }
+    syncErr = msg;
+    paintSync();
+    return false;
+  }
+  syncErr = '';
+  st = data;
+  if (st.server_time) skew = Date.parse(st.server_time) - Date.now();
+  paint();
+  return true;
+}
+
+function explain(m) {
+  if (/NOT_ADMIN/.test(m)) return `${signedInAs || 'That account'} is not in the admins table, so it cannot run the game.`;
+  if (/imp_admin_state|imp_control|does not exist|Could not find the function/i.test(m))
+    return 'The game is not installed yet. Run imposter.sql in the Supabase SQL Editor.';
+  if (/NO_SUCH_ROUND/.test(m)) return 'That round does not exist in imposter.sql.';
+  if (/NO_ROUND/.test(m)) return 'Start a round first.';
+  return m;
+}
+
+/* One path for every button. Locks the page while the database works. */
+async function ctl(action, value = null) {
+  if (busy) return;
+  busy = true;
+  document.querySelectorAll('#control button, #rounds button, #winner button, #resetGame')
+    .forEach((b) => { b.disabled = true; });
+  const { error } = await sb.rpc('imp_control', { p_action: action, p_value: value == null ? null : String(value) });
+  busy = false;
+  await refresh();
+  $('resetGame').disabled = false;   // static button - not redrawn by refresh
+  if (error) { syncErr = explain(error.message); paintSync(); }
+}
+
+/* -------------------------------------------------------------- paint -- */
+function paint() {
+  $('roundChip').textContent = st.round ? `Round ${st.round} of ${st.total_rounds}` : `${st.total_rounds} rounds`;
+  $('stageChip').textContent = STAGE_LABEL[st.stage] ?? st.stage;
+  paintSync();
+  paintControl();
+  paintBoard();
+  paintWinner();
+  paintRounds();
+  $('foot').textContent = 'Updates automatically. Last checked '
+    + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function paintSync() {
+  $('syncErr').innerHTML = syncErr ? `<div class="err">${esc(syncErr)}</div>` : '';
+}
+
+/* ------------------------------------------------------------ control -- */
+function paintControl() {
+  const host = $('control');
+  const r = curRound();
+  const n = st.round;
+  const next = roundOf(n + 1);
+  const restart = '<button class="ghost" type="button" data-act="RESTART_ROUND">Restart this round</button>';
+
+  if (st.stage === 'LOBBY' || !r) {
+    const first = (st.rounds || [])[0];
+    host.innerHTML = `<div class="card now">
+      <div class="stagek">Not started</div><h3>Ready when you are</h3>
+      <p class="hint">Starting a round sends the question to every player screen. Everyone gets the
+        same one except the imposter.</p>
+      <div class="btns">${first
+        ? `<button class="yellow" type="button" data-start="${first.round_no}">Start round ${first.round_no}</button>`
+        : '<div class="err">No rounds found. Run imposter.sql.</div>'}</div></div>`;
+    wire(host);
+    return;
+  }
+
+  const impBox = `<div class="secbox">${crew(r.imposter_id || r.imposter_email)}
+    <div><div class="k">Imposter this round</div>
+      <div class="v ${st.stage === 'REVEAL' ? '' : 'sec'}">${esc(r.imposter_name || r.imposter_email)}</div></div></div>`;
+
+  if (st.stage === 'QUESTION') {
+    host.innerHTML = `<div class="card now">
+      <div class="stagek">Round ${n} &middot; question is out</div>
+      <h3>Everyone answers out loud</h3>
+      <p class="hint">Every screen is showing its question now. Go round the group, then open voting.
+        Voting runs for ${fmtClock(st.vote_seconds || 120)}.</p>
+      ${impBox}
+      <div class="btns">
+        <button class="yellow" type="button" data-act="OPEN_VOTING">Open voting (${fmtClock(st.vote_seconds || 120)})</button>
+        ${restart}
+      </div></div>`;
+    wire(host);
+    return;
+  }
+
+  if (st.stage === 'VOTING') {
+    const left = voteLeft();
+    const running = clockRunning();
+    const timeUp = left === 0;
+    host.innerHTML = `<div class="card now">
+      <div class="ctl-top">
+        <div class="grow">
+          <div class="stagek">Round ${n} &middot; voting</div>
+          <h3>Who's the imposter?</h3>
+          <p class="hint" style="margin:0">Players vote from their own screens. Votes lock when the clock hits zero.</p>
+        </div>
+        <div><div class="clock${timeUp ? ' done' : running ? '' : ' paused'}" id="aClock">${fmtClock(left ?? 0)}</div>
+          <div class="clocknote" id="aClockNote">${timeUp ? "Time's up" : running ? 'Running on every screen' : 'Paused'}</div></div>
+      </div>
+      ${impBox}
+      <div class="btns">
+        ${running
+          ? '<button type="button" data-act="PAUSE">Pause</button>'
+          : `<button type="button" data-act="RESUME" ${timeUp ? 'disabled' : ''}>Resume</button>`}
+        <button type="button" data-act="ADD_MINUTE">+1 min</button>
+        <button class="ghost" type="button" data-act="LOCK" ${timeUp ? 'disabled' : ''}>Lock voting now</button>
+      </div>
+      <div class="btns">
+        <button class="yellow" type="button" id="revealBtn">Reveal the imposter</button>
+        ${restart}
+      </div></div>`;
+    wire(host);
+    $('revealBtn').onclick = () => {
+      const missing = st.roster.length - tally().voted.size;
+      if (missing > 0 && !timeUp && !confirm(`Reveal now? ${missing} player(s) have not voted yet.`)) return;
+      ctl('REVEAL');
+    };
+    return;
+  }
+
+  /* REVEAL */
+  const { leaders } = tally();
+  const any = (st.votes || []).length > 0;
+  const caught = !!r.imposter_id && leaders.length === 1 && leaders[0] === r.imposter_id;
+  host.innerHTML = `<div class="card now">
+    <div class="stagek">Round ${n} &middot; revealed on every screen</div>
+    <h3>${caught ? 'Caught!' : any ? 'The imposter got away' : 'Nobody voted'}</h3>
+    <p class="hint">Every player can now see who the imposter was and both questions.</p>
+    ${impBox}
+    <div class="btns">
+      ${next
+        ? `<button class="yellow" type="button" data-start="${next.round_no}">Start round ${next.round_no}</button>`
+        : '<div class="note" style="margin:0;flex:1 1 100%">That was the last round. Pick the winner on the right.</div>'}
+      ${restart}
+    </div></div>`;
+  wire(host);
+}
+
+/* -------------------------------------------------------------- board -- */
+function paintBoard() {
+  const host = $('board');
+  if (st.stage !== 'VOTING' && st.stage !== 'REVEAL') { host.innerHTML = ''; return; }
+  const r = curRound();
+  const revealed = st.stage === 'REVEAL';
+  const { by, top, voted } = tally();
+  const waiting = st.roster.filter((p) => !voted.has(p.id));
+  const tiles = st.roster.map((p) => {
+    const vs = by[p.id] || [];
+    const isImp = r && p.id === r.imposter_id;
+    const cls = ['vtile', vs.length && vs.length === top ? 'lead' : '', isImp && revealed ? 'imp' : ''].filter(Boolean).join(' ');
+    const tags = [
+      isImp ? `<span class="vtick red${revealed ? '' : ' sec'}">Imposter</span>` : '',
+      voted.has(p.id) ? '<span class="vtick">Voted</span>' : ''
+    ].join('');
+    return `<div class="${cls}">
+      <div class="vhead">${crew(p.id)}
+        <span class="vmeta"><span class="vn">${esc(p.name)}</span><span class="vtags">${tags}</span></span>
+        <span class="vc">${vs.length || ''}</span></div>
+      <div class="vchips">${vs.length
+        ? vs.map((v) => `<span class="vchip">${crew(v, 'mini')}${esc(nameOf(v))}</span>`).join('')
+        : '<span class="vnone">No votes</span>'}</div>
+    </div>`;
+  }).join('');
+  host.innerHTML = `<div class="card">
+    <h2>${revealed ? 'Final votes' : 'Live vote board'}<span class="sp"></span>
+      <span class="pill ${waiting.length ? 'wait' : 'on'}">${voted.size} of ${st.roster.length} voted</span></h2>
+    <div class="vboard">${tiles}</div>
+    <p class="waiting">${waiting.length && !revealed
+      ? `Still to vote: <strong>${waiting.map((p) => esc(p.name)).join(', ')}</strong>.`
+      : revealed ? '' : 'Everyone has voted.'}</p>
+  </div>`;
+}
+
+/* ------------------------------------------------------------- winner -- */
+function paintWinner() {
+  const w = st.winner;
+  $('winner').innerHTML = `<div class="card">
+    <h2>Final result</h2>
+    <p class="hint">Puts a big banner on every player screen. You can change or clear it.</p>
+    <div class="wnow ${w === 'MAFIA' ? 'bad' : w === 'CIVILIANS' ? 'good' : 'none'}">${
+      w === 'MAFIA' ? 'The Mafia win' : w === 'CIVILIANS' ? 'The Civilians win' : 'No result sent yet'}</div>
+    <div class="winrow">
+      <button class="red" type="button" data-win="MAFIA" ${w === 'MAFIA' ? 'disabled' : ''}>Mafia win</button>
+      <button class="green" type="button" data-win="CIVILIANS" ${w === 'CIVILIANS' ? 'disabled' : ''}>Civilians win</button>
+    </div>
+    <div class="btns" style="margin-top:10px">
+      <button class="ghost" type="button" data-win="" ${w ? '' : 'disabled'}>Clear result</button>
+    </div>
+  </div>`;
+  $('winner').querySelectorAll('[data-win]').forEach((b) => {
+    b.onclick = () => {
+      const v = b.dataset.win;
+      const text = v === 'MAFIA' ? 'Send "The Mafia win" to every screen?'
+        : v === 'CIVILIANS' ? 'Send "The Civilians win" to every screen?'
+        : 'Clear the result banner from every screen?';
+      if (confirm(text)) ctl('SET_WINNER', v);
+    };
+  });
+}
+
+/* ------------------------------------------------------------- rounds -- */
+function paintRounds() {
+  const rows = (st.rounds || []).map((r) => {
+    const isCur = r.round_no === st.round && st.stage !== 'LOBBY';
+    const played = r.round_no < st.round || (isCur && st.stage === 'REVEAL');
+    const shown = played;   // already revealed to players - no need to blur
+    const status = isCur ? `<span class="pill cy">${esc(STAGE_LABEL[st.stage])}</span>`
+      : played ? '<span class="pill on">Played</span>' : '<span class="pill">Not played</span>';
+    return `<div class="rnd${isCur ? ' cur' : ''}">
+      <div class="rh"><b>Round ${r.round_no}</b>${status}<span class="sp"></span>
+        <button class="small ${isCur ? 'ghost' : ''}" type="button" data-start="${r.round_no}">${isCur ? 'Restart' : played ? 'Replay' : 'Start'}</button></div>
+      <div class="ql">Everyone</div><div class="qv">${esc(r.everyone_q)}</div>
+      <div class="ql imp">Imposter</div><div class="qv ${shown ? '' : 'sec'}">${esc(r.imposter_q)}</div>
+      <div class="ql imp">Imposter player</div>
+      <div class="qv ${shown ? '' : 'sec'}">${esc(r.imposter_name || '—')} <span class="faint">${esc(r.imposter_email)}</span></div>
+      ${r.imposter_id ? '' : `<div class="err">No player has ${esc(r.imposter_email)} as their login, so nobody would get the
+        imposter question. Fix claim_email in Supabase (Table Editor &rarr; players), then rerun imposter.sql's check.</div>`}
+    </div>`;
+  }).join('');
+  $('rounds').innerHTML = `<div class="card"><h2>Rounds</h2>
+    <p class="hint">Same people, same questions every time. Start or replay any round; its votes are cleared first.</p>
+    ${rows || '<p class="faint">No rounds. Run imposter.sql.</p>'}</div>`;
+  wire($('rounds'));
+}
+
+/* Wires [data-act] and [data-start] buttons inside a host. */
+function wire(host) {
+  host.querySelectorAll('[data-act]').forEach((b) => {
+    b.onclick = () => {
+      const a = b.dataset.act;
+      if (a === 'RESTART_ROUND' && !confirm(`Restart round ${st.round}? Its votes are cleared and the question goes back up.`)) return;
+      ctl(a);
+    };
+  });
+  host.querySelectorAll('[data-start]').forEach((b) => {
+    b.onclick = () => {
+      const n = Number(b.dataset.start);
+      if (n === st.round && st.stage !== 'LOBBY') {
+        if (!confirm(`Restart round ${n}? Its votes are cleared and the question goes back up.`)) return;
+        return ctl('RESTART_ROUND');
+      }
+      if (inProgress() && !confirm(`Round ${st.round} is still in progress. Start round ${n} anyway?`)) return;
+      if (n < st.round && !confirm(`Round ${n} has already been played. Replay it? Its old votes are cleared.`)) return;
+      ctl('START_ROUND', n);
+    };
+  });
+}
+
+/* ------------------------------------------------------------ secrets -- */
+function applySec() {
+  document.body.classList.toggle('hidesec', hideSec);
+  $('secBtn').textContent = hideSec ? 'Show secrets' : 'Hide secrets';
+  sessionStorage.setItem('ampid-imp-sec', hideSec ? 'hide' : 'show');
+}
+$('secBtn').onclick = () => { hideSec = !hideSec; applySec(); };
+document.addEventListener('keydown', (e) => {
+  if (!st || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '')) return;
+  if (e.key === 'h' || e.key === 'H') { hideSec = !hideSec; applySec(); }
+});
+
+/* Local clock tick. */
+setInterval(() => {
+  const left = voteLeft();
+  const c = $('aClock');
+  if (left === null || !c) return;
+  c.textContent = fmtClock(left);
+  c.classList.toggle('done', left === 0);
+  if (left === 0) { const n = $('aClockNote'); if (n) n.textContent = "Time's up"; }
+}, 500);
+
+/* ------------------------------------------------------------- boot --- */
+function fail(msg) { $('err').innerHTML = `<div class="err">${esc(msg)}</div>`; }
+
+$('resetGame').onclick = () => {
+  if (!confirm('Reset the whole game? Every vote and the result banner are cleared and everyone goes back to the start screen.')) return;
+  ctl('RESET_GAME');
+};
+$('go').onclick = async () => {
+  $('err').innerHTML = '';
+  const { error } = await sb.auth.signInWithPassword({
+    email: $('email').value.trim().toLowerCase(),
+    password: $('pw').value
+  });
+  if (error) return fail(error.message);
+  load();
+};
+$('pw').onkeydown = (e) => { if (e.key === 'Enter') $('go').click(); };
+$('out').onclick = async () => {
+  clearTimeout(timer);
+  await sb.auth.signOut();
+  location.reload();
+};
+
+const { data: { session } } = await sb.auth.getSession();
+if (session) load();
+</script>
+</body>
+</html>

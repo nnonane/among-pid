@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<!-- among pid imposter v2.0 | player.html | 25 Nov 2026 | visual layer v1.0 (cartoon skin) -->
+<!--
+  THE PLAYER SCREEN - IMPOSTER (final week).
+  No roles, kills, tokens or shop. Each round everyone gets the same question,
+  except one imposter who gets a similar one. Answer out loud, then vote for
+  who you think the imposter was. Hunter reveals it.
+
+  Everything comes from ONE database call, imp_get_state() (imposter.sql).
+  The questions are NOT in this file, so viewing the page source gives
+  nothing away. The database decides which question each login sees.
+
+  Same login and storage key as before, so anyone already signed in stays
+  signed in.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Among PID — Imposter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600;700&family=Nunito:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #0a0e22;
+    --panel: #1c2650;
+    --panel-2: #131a3d;
+    --text: #eef2ff;
+    --muted: #b7c3e6;
+    --faint: #8e9bc4;
+    --red: #ff4d4d;
+    --cyan: #38d9f5;
+    --yellow: #ffd23f;
+    --green: #4ade80;
+    --line: 3px solid var(--ink);
+    --drop: 0 6px 0 var(--ink);
+    --drop-sm: 0 4px 0 var(--ink);
+    --o2: -2px -2px 0 var(--ink), 2px -2px 0 var(--ink), -2px 2px 0 var(--ink), 2px 2px 0 var(--ink),
+          0 -2px 0 var(--ink), 0 2px 0 var(--ink), -2px 0 0 var(--ink), 2px 0 0 var(--ink), 0 4px 0 var(--ink);
+    --o3: -3px -3px 0 var(--ink), 3px -3px 0 var(--ink), -3px 3px 0 var(--ink), 3px 3px 0 var(--ink),
+          0 -3px 0 var(--ink), 0 3px 0 var(--ink), -3px 0 0 var(--ink), 3px 0 0 var(--ink), 0 6px 0 var(--ink);
+    --head: "Fredoka", "Nunito", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { background: #070a1c; }
+  body { margin: 0; min-height: 100vh; color: var(--text); overflow-x: hidden;
+         font: 400 16px/1.5 "Nunito", system-ui, sans-serif; }
+
+  /* ---------------------------------------------------------- background */
+  body::before {
+    content: ""; position: fixed; inset: 0; z-index: -2; pointer-events: none;
+    background:
+      linear-gradient(rgba(5, 7, 22, .5), rgba(5, 7, 22, .5)),
+      url("bg.jpg") center / cover no-repeat,
+      radial-gradient(1px 1px at 12% 18%, #fff 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 72% 12%, #fff 50%, transparent 51%),
+      radial-gradient(1px 1px at 38% 64%, #cfd8ff 50%, transparent 51%),
+      radial-gradient(2px 2px at 86% 58%, #fff 50%, transparent 51%),
+      radial-gradient(1px 1px at 22% 86%, #fff 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 58% 36%, #ffe9a8 50%, transparent 51%),
+      radial-gradient(circle at 20% 10%, #2a1f5c 0, transparent 45%),
+      radial-gradient(circle at 85% 80%, #102a5c 0, transparent 50%),
+      #0a0d26;
+  }
+  body::after {
+    content: ""; position: fixed; inset: -200px 0 0 0; z-index: -1; pointer-events: none; opacity: .7;
+    background-image:
+      radial-gradient(1.5px 1.5px at 20px 30px, #fff 50%, transparent 51%),
+      radial-gradient(1px 1px at 140px 90px, #dfe6ff 50%, transparent 51%),
+      radial-gradient(1px 1px at 90px 160px, #fff 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 170px 180px, #fff5cc 50%, transparent 51%);
+    background-size: 200px 200px;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    body::after { animation: drift 90s linear infinite; }
+    @keyframes drift { to { transform: translateY(200px); } }
+  }
+
+  /* -------------------------------------------------------------- layout */
+  .wrap { max-width: 560px; margin: 0 auto; padding: 24px 16px 48px; }
+  .hide { display: none !important; }
+  .masthead { text-align: center; margin: 4px 0 20px; }
+  h1 { margin: 0; font: 700 44px/1 var(--head); letter-spacing: .04em;
+       text-transform: uppercase; color: #fff; text-shadow: var(--o3); }
+  h1 .accent { color: var(--red); }
+  .week { display: inline-block; margin-top: 14px; padding: 4px 16px;
+          font: 600 15px/1.4 var(--head); color: var(--ink); background: var(--yellow);
+          border: var(--line); border-radius: 999px; box-shadow: var(--drop-sm); }
+  .week:empty { display: none; }
+
+  .card { position: relative; background: var(--panel); border: var(--line);
+          border-radius: 20px; padding: 20px; margin-bottom: 20px; box-shadow: var(--drop); }
+  h2 { margin: 0 0 12px; font: 700 21px/1.2 var(--head); color: #fff;
+       text-shadow: var(--o2); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  h3 { margin: 0 0 8px; font: 700 28px/1.15 var(--head); color: #fff; text-shadow: var(--o2); }
+  p.hint { margin: 0 0 16px; color: var(--muted); font-size: 15px; }
+
+  /* ----------------------------------------------------------- login */
+  .login { text-align: center; padding: 24px 20px; }
+  .login-crew { display: flex; justify-content: center; align-items: flex-end; gap: 4px; margin: 0 0 8px; }
+  .login-crew .crew { width: 56px; height: 56px; }
+  .login-crew .crew:nth-child(2) { width: 72px; height: 72px; }
+  .login-title { justify-content: center; font-size: 30px; margin-bottom: 4px; }
+  .login .fields { text-align: left; }
+  .login p.hint { margin-bottom: 20px; }
+  label { display: block; margin: 0 0 6px; font: 600 15px/1.3 var(--head); color: var(--muted); }
+  input { width: 100%; min-height: 52px; margin: 0 0 16px; padding: 12px 14px;
+          font: 400 16px/1.3 "Nunito", sans-serif; color: var(--text);
+          background: var(--panel-2); border: var(--line); border-radius: 16px; }
+  input:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(56, 217, 245, .35); }
+
+  /* ------------------------------------------------------------ buttons */
+  button { display: block; width: 100%; min-height: 52px; padding: 12px 20px; cursor: pointer;
+           font: 700 18px/1.2 var(--head); letter-spacing: .02em; color: #062530;
+           background: var(--cyan); border: var(--line); border-radius: 16px;
+           box-shadow: 0 5px 0 var(--ink); transition: transform .08s, box-shadow .08s, filter .12s; }
+  button:hover:not(:disabled) { filter: brightness(1.08); }
+  button:active:not(:disabled) { transform: translateY(4px); box-shadow: 0 1px 0 var(--ink); }
+  button:disabled { cursor: not-allowed; color: #8c95b5; background: #343d63; box-shadow: 0 3px 0 var(--ink); }
+  button.ghost { margin-top: 8px; color: #fff; background: #2d3970; }
+  button:focus-visible, .vtile:focus-visible, input:focus-visible { outline: 3px solid var(--yellow); outline-offset: 3px; }
+  #vGo:not(:disabled) { animation: pulse 1.25s ease-in-out infinite; }
+  #vGo:not(:disabled):active { animation: none; }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); box-shadow: 0 5px 0 var(--ink), 0 0 0 0 rgba(56, 217, 245, .55); }
+    50% { transform: scale(1.025); box-shadow: 0 5px 0 var(--ink), 0 0 0 8px rgba(56, 217, 245, 0); }
+  }
+
+  .err, .ok, .note { margin: 0 0 16px; padding: 12px 16px; border-radius: 16px;
+                     border: 3px solid; font-size: 15px; font-weight: 700; }
+  .err  { background: #3d0f1a; border-color: var(--red); color: #ffd2d2; }
+  .ok   { background: #0f3a28; border-color: var(--green); color: #cff8de; }
+  .note { background: #141b42; border-color: var(--yellow); color: #ffe894; }
+
+  /* ---------------------------------------------------------- avatars */
+  .crew { display: block; width: 36px; height: 36px; flex: 0 0 auto; overflow: visible; }
+  .crew.mini { display: inline-block; width: 18px; height: 18px; vertical-align: -4px; margin-right: 4px; }
+  .crew.big { width: 96px; height: 96px; margin: 0 auto; }
+
+  /* ------------------------------------------------------- how-to steps */
+  .steps { margin: 0 0 16px; padding: 0; list-style: none; display: grid; gap: 8px; }
+  .steps li { display: flex; gap: 12px; align-items: flex-start; padding: 10px 12px;
+              background: var(--panel-2); border: var(--line); border-radius: 16px; font-size: 15px; }
+  .steps .n { flex: 0 0 28px; height: 28px; display: grid; place-items: center; font: 700 15px/1 var(--head);
+              color: var(--ink); background: var(--yellow); border: 2px solid var(--ink); border-radius: 50%; }
+
+  /* ---------------------------------------------------------- question */
+  .qcard { text-align: center; padding: 28px 20px 24px; border-color: var(--ink);
+           background: linear-gradient(160deg, #24306a, #1a2252); }
+  .qk { display: inline-block; margin-bottom: 14px; padding: 3px 14px; font: 600 13px/1.4 var(--head);
+        letter-spacing: .08em; text-transform: uppercase; color: var(--ink); background: var(--yellow);
+        border: var(--line); border-radius: 999px; }
+  .qt { font: 700 clamp(24px, 6.5vw, 32px)/1.25 var(--head); color: #fff; text-shadow: var(--o2);
+        overflow-wrap: anywhere; }
+  .qcard p.hint { margin: 16px 0 0; }
+  .qcard.compact { padding: 16px 16px 18px; }
+  .qcard.compact .qk { margin-bottom: 8px; }
+  .qcard.compact .qt { font-size: 19px; }
+
+  /* ----------------------------------------------- people rows / roster */
+  .people { display: grid; gap: 8px; }
+  @media (min-width: 480px) { #roster.people { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .who { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 12px;
+         background: var(--panel-2); border: var(--line); border-radius: 16px; }
+  .who .n { flex: 1; min-width: 0; font: 600 16px/1.3 var(--head); overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; }
+  .you { display: inline-block; padding: 3px 12px; white-space: nowrap; font: 600 13px/1.4 var(--head);
+         border: 2px solid var(--ink); border-radius: 999px; background: var(--cyan); color: var(--ink); }
+
+  /* ------------------------------------------------------- vote board */
+  .vtop { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .vtop h3 { margin: 0; }
+  .vclock { flex: 0 0 auto; padding: 6px 14px; font: 700 40px/1 var(--head);
+            font-variant-numeric: tabular-nums; color: var(--yellow); text-shadow: var(--o2);
+            background: #070a1c; border: var(--line); border-radius: 16px; box-shadow: var(--drop-sm); }
+  .vclock.done { color: var(--red); }
+  .vclock.paused { color: #9aa4c4; }
+  .vboard { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 4px 0 16px; }
+  .vtile { position: relative; min-width: 0; padding: 10px; background: var(--panel-2); border: var(--line);
+           border-radius: 16px; box-shadow: var(--drop-sm);
+           transition: transform .1s, box-shadow .15s, border-color .15s, background .15s; }
+  .vtile.tap { cursor: pointer; }
+  .vtile.tap:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--ink); }
+  .vtile.lead { border-color: var(--yellow); background: #2b2a45;
+                box-shadow: 0 0 0 3px rgba(255, 210, 63, .35), 0 0 18px rgba(255, 210, 63, .35), var(--drop-sm); }
+  .vtile.mine { border-color: var(--green); background: #143a31;
+                box-shadow: 0 0 0 3px rgba(74, 222, 128, .35), 0 0 18px rgba(74, 222, 128, .3), var(--drop-sm); }
+  .vtile.sel { border-color: var(--cyan); background: #123448; transform: translateY(-2px);
+               box-shadow: 0 0 0 3px rgba(56, 217, 245, .45), 0 0 20px rgba(56, 217, 245, .4), var(--drop-sm); }
+  .vtile.imp { border-color: var(--red); background: #3b0d1c; }
+  .vtile.off { opacity: .85; }
+  .vhead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .vmeta { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+  .vhead .crew { width: 32px; height: 32px; }
+  .vn { max-width: 100%; font: 600 15px/1.2 var(--head); overflow: hidden; overflow-wrap: anywhere;
+        display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .vn em { font-style: normal; color: var(--faint); font-size: 13px; }
+  .vtick { padding: 1px 8px; font: 600 12px/1.4 var(--head); color: var(--ink);
+           background: var(--green); border: 2px solid var(--ink); border-radius: 999px; }
+  .vtick.red { background: var(--red); color: #fff; }
+  .vc { position: absolute; top: -10px; right: -8px; min-width: 32px; padding: 0 6px; height: 32px;
+        display: grid; place-items: center; font: 700 18px/1 var(--head); color: var(--ink);
+        background: var(--yellow); border: var(--line); border-radius: 999px; }
+  .vc:empty { display: none; }
+  .vchips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .vchip { max-width: 100%; padding: 2px 8px 2px 4px; font: 700 13px/1.4 "Nunito", sans-serif;
+           color: #dfe5fa; background: #2a3463; border: 2px solid var(--ink); border-radius: 999px;
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; animation: vpop .25s ease-out; }
+  .vchip.me { background: var(--green); color: var(--ink); }
+  .vnone { font-size: 14px; font-style: italic; color: var(--faint); }
+  @keyframes vpop { from { opacity: 0; transform: scale(.6); } to { opacity: 1; transform: none; } }
+  @media (max-width: 339px) { .vboard { grid-template-columns: 1fr; } }
+
+  /* ------------------------------------------------------------ reveal */
+  .reveal { margin: -20px -20px 16px; padding: 24px 16px; text-align: center; overflow: hidden;
+            border-bottom: var(--line); border-radius: 17px 17px 0 0;
+            background:
+              radial-gradient(1.5px 1.5px at 8% 22%, #fff 50%, transparent 51%),
+              radial-gradient(1px 1px at 24% 70%, #fff 50%, transparent 51%),
+              radial-gradient(2px 2px at 40% 14%, #fff 50%, transparent 51%),
+              radial-gradient(1.5px 1.5px at 78% 30%, #fff 50%, transparent 51%),
+              radial-gradient(1px 1px at 92% 64%, #fff 50%, transparent 51%),
+              #060919; }
+  .reveal .rk { display: inline-block; padding: 3px 14px; font: 600 14px/1.4 var(--head);
+                color: var(--ink); background: var(--yellow); border: var(--line); border-radius: 999px; }
+  .reveal .rfloat { margin: 16px 0 8px; transform: rotate(-14deg); }
+  @media (prefers-reduced-motion: no-preference) {
+    .reveal .rfloat { animation: eject 3s ease-in-out infinite; }
+    @keyframes eject { 0%, 100% { transform: translate(-6px, 0) rotate(-14deg); }
+                       50% { transform: translate(6px, -8px) rotate(10deg); } }
+  }
+  .reveal .rn { margin: 8px 0 4px; font: 700 30px/1.2 var(--head); color: #fff; text-shadow: var(--o2);
+                overflow-wrap: anywhere; }
+  .reveal .rr strong { display: block; margin-top: 4px; font: 700 40px/1.05 var(--head);
+                       letter-spacing: .04em; text-transform: uppercase; text-shadow: var(--o3); }
+  .reveal.caught .rr strong { color: var(--green); }
+  .reveal.escaped .rr strong { color: var(--red); }
+  .qpair { display: grid; gap: 10px; margin: 0 0 16px; }
+  .qbox { padding: 12px 14px; background: var(--panel-2); border: var(--line); border-radius: 16px; }
+  .qbox.imp { background: #2a0914; }
+  .ql { font: 600 12px/1.3 var(--head); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+  .qbox.imp .ql { color: #ff8a8a; }
+  .qv { margin-top: 4px; font: 600 17px/1.35 var(--head); color: #fff; overflow-wrap: anywhere; }
+  .outcome { margin: 0 0 16px; text-align: center; font: 700 19px/1.3 var(--head); color: var(--yellow);
+             text-shadow: var(--o2); }
+
+  /* ------------------------------------------------------- winner banner */
+  .card.win { padding: 0; overflow: hidden; }
+  .winner { padding: 32px 20px; text-align: center; }
+  .winner.good { background: #16784a; }
+  .winner.bad { background: #b3182f; }
+  .winner .wk { display: inline-block; margin-bottom: 12px; padding: 3px 14px; font: 600 14px/1.4 var(--head);
+                letter-spacing: .08em; text-transform: uppercase; color: var(--ink);
+                background: var(--yellow); border: var(--line); border-radius: 999px; }
+  .winner h3 { margin: 0; font-size: clamp(36px, 11vw, 52px); color: #fff; text-shadow: var(--o3); }
+  @media (prefers-reduced-motion: no-preference) {
+    .winner h3 { animation: winpop .6s ease-out; }
+    @keyframes winpop { from { transform: scale(.6); opacity: 0; } to { transform: none; opacity: 1; } }
+  }
+
+  .foot { margin-top: 12px; text-align: center; font-size: 14px; color: var(--muted); }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="crew" viewBox="0 0 64 64">
+    <path d="M31 9 L29 3" stroke="#0a0e22" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="28.5" cy="3" r="2.6" style="fill:var(--c)" stroke="#0a0e22" stroke-width="2"/>
+    <rect x="7" y="27" width="13" height="21" rx="5" style="fill:var(--c)" stroke="#0a0e22" stroke-width="3"/>
+    <rect x="7" y="27" width="13" height="21" rx="5" fill="#000" opacity=".22"/>
+    <path d="M18 31 C18 15 25 9 35 9 C47 9 54 16 54 31 L54 52 C54 57 52 59 48 59 L43 59 C40 59 39 57 39 54 L39 51 L33 51 L33 54 C33 57 32 59 29 59 L24 59 C20 59 18 57 18 52 Z" style="fill:var(--c)" stroke="#0a0e22" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M47 13 C51 17 52 23 52 31 L52 51 C52 55 51 57 48 57 L44 57 C42 57 41 56 41 53 L41 49 C46 48 49 43 49 36 Z" fill="#000" opacity=".18"/>
+    <rect x="31" y="18" width="26" height="15" rx="7.5" fill="#a8ecfb" stroke="#0a0e22" stroke-width="3"/>
+    <rect x="31" y="26" width="26" height="7" rx="3.5" fill="#5cc3dc" opacity=".6"/>
+    <rect x="41" y="21" width="11" height="4" rx="2" fill="#fff" opacity=".9"/>
+  </symbol>
+</svg>
+
+<div class="wrap">
+  <header class="masthead">
+    <h1>Among <span class="accent">PID</span></h1>
+    <div class="week" id="week"></div>
+  </header>
+
+  <div class="card login" id="loginCard">
+    <div class="login-crew" aria-hidden="true">
+      <svg class="crew" style="--c:#4d8dff" viewBox="0 0 64 64"><use href="#crew"/></svg>
+      <svg class="crew" style="--c:#ff4d4d" viewBox="0 0 64 64"><use href="#crew"/></svg>
+      <svg class="crew" style="--c:#ffd23f" viewBox="0 0 64 64"><use href="#crew"/></svg>
+    </div>
+    <h2 class="login-title">Sign in to play</h2>
+    <p class="hint">Use the email and password you were given.</p>
+    <div class="fields">
+      <div id="err"></div>
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="username">
+      <label for="pw">Password</label>
+      <input id="pw" type="password" autocomplete="current-password">
+      <button id="go">Sign in</button>
+    </div>
+  </div>
+
+  <div class="hide" id="app">
+    <div id="syncErr"></div>
+    <div id="winCard"></div>
+    <div id="stageCard"></div>
+    <div class="card" id="rosterCard">
+      <h2>Who is playing</h2>
+      <div class="people" id="roster"></div>
+    </div>
+    <button class="ghost" id="out">Log out</button>
+    <div class="foot" id="foot"></div>
+  </div>
+</div>
+
+<script type="module">
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+const URL = 'https://ashjitdpilxwcfhxamni.supabase.co';
+const KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFzaGppdGRwaWx4d2NmaHhhbW5pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwNDAxOTEsImV4cCI6MjEwNTYxNjE5MX0.wWTdrocCPlOWWN5CwTVi--OgWuVBEc99zWxWfVE_Gqk';
+
+/* Same storage key as the Mafia player page, so nobody has to sign in again. */
+const sb = createClient(URL, KEY, { auth: { storageKey: 'ampid-player', persistSession: true } });
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g,
+  (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+/* Same avatar colours as before: a stable hash of the player id. */
+const CREW = ['#ff5a5a','#4d8dff','#34d27b','#ff7ac8','#ff9a3c','#ffd23f','#a98bff','#38d9f5','#b6f04a','#f2f4ff','#c7844a','#9aa4bc'];
+const crew = (id, cls = '') => { let h = 5381; for (const ch of String(id ?? '')) h = ((h * 33) ^ ch.charCodeAt(0)) >>> 0;
+  return `<svg class="crew ${cls}" style="--c:${CREW[h % CREW.length]}" viewBox="0 0 64 64" aria-hidden="true"><use href="#crew"/></svg>`; };
+
+/* -------------------------------------------------------------- state -- */
+let st = null;          // result of imp_get_state()
+let skew = 0;           // server clock minus this device's clock, in ms
+let selected = null;    // tile tapped but not yet confirmed
+let busy = false;
+let timer = null;
+let syncErr = '';
+
+const nameOf = (id) => st?.roster?.find((p) => p.id === id)?.name ?? 'someone';
+const card = (cls, inner) => `<div class="card ${cls}">${inner}</div>`;
+const fmtClock = (sec) => `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
+
+/** Seconds left to vote, or null outside voting. */
+function voteLeft() {
+  if (!st || st.stage !== 'VOTING') return null;
+  if (st.ends_at) return Math.max(0, Math.ceil((Date.parse(st.ends_at) - (Date.now() + skew)) / 1000));
+  return Math.max(0, st.remaining_seconds || 0);
+}
+const clockRunning = () => !!st?.ends_at;
+
+/** voter ids grouped by who they voted for. */
+function tally() {
+  const by = {};
+  for (const v of st.votes || []) (by[v.target_id] ||= []).push(v.voter_id);
+  const top = Math.max(0, ...Object.values(by).map((a) => a.length));
+  const leaders = top ? Object.keys(by).filter((id) => by[id].length === top) : [];
+  return { by, top, leaders, voted: new Set((st.votes || []).map((v) => v.voter_id)) };
+}
+
+/* --------------------------------------------------------------- load -- */
+async function load() {
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) return;
+  const { error: claimErr } = await sb.rpc('claim_my_seat');
+  if (claimErr) return fail('Could not link your login to a seat: ' + claimErr.message + '. Tell Hunter.');
+  $('go').disabled = true;
+  const ok = await refresh(true);
+  $('go').disabled = false;
+  if (!ok) return;
+  $('loginCard').classList.add('hide');
+  $('app').classList.remove('hide');
+  schedule();
+}
+
+function schedule() {
+  clearTimeout(timer);
+  timer = setTimeout(async () => {
+    try { await refresh(); } catch (err) { console.error('[player] refresh failed', err); }
+    schedule();
+  }, st?.stage === 'VOTING' ? 2500 : 4000);
+}
+
+async function refresh(first = false) {
+  if (busy) return true;
+  const { data, error } = await sb.rpc('imp_get_state');
+  if (error) {
+    const msg = /imp_get_state|does not exist|Could not find the function/i.test(error.message)
+      ? 'The game is not set up yet. Tell Hunter (imposter.sql needs running).'
+      : error.message;
+    if (first) { fail(msg); return false; }
+    syncErr = msg;
+    paintSync();
+    return false;
+  }
+  syncErr = '';
+  st = data;
+  if (st.server_time) skew = Date.parse(st.server_time) - Date.now();
+  paint();
+  return true;
+}
+
+/* -------------------------------------------------------------- paint -- */
+function paint() {
+  $('week').textContent = st.round ? `Round ${st.round} of ${st.total_rounds}` : 'Imposter';
+  paintSync();
+  paintWinner();
+  paintStage();
+  paintRoster();
+  $('foot').textContent = 'Updates automatically. Last checked '
+    + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function paintSync() {
+  $('syncErr').innerHTML = syncErr
+    ? `<div class="err">Having trouble updating: ${esc(syncErr)}. Showing the last thing we saw.</div>` : '';
+}
+
+function paintWinner() {
+  const w = st.winner;
+  $('winCard').innerHTML = w
+    ? card('win', `<div class="winner ${w === 'MAFIA' ? 'bad' : 'good'}">
+        <div class="wk">Among PID &middot; final result</div>
+        <h3>${w === 'MAFIA' ? 'The Mafia win' : 'The Civilians win'}</h3></div>`)
+    : '';
+}
+
+function paintStage() {
+  const host = $('stageCard');
+  if (!st.me) {
+    host.innerHTML = card('', `<h3>No seat linked</h3>
+      <p class="hint" style="margin:0">You are signed in, but no player is linked to this email. Tell Hunter.</p>`);
+    return;
+  }
+  if (st.stage === 'QUESTION') { host.innerHTML = questionCard(false); return; }
+  if (st.stage === 'VOTING') { host.innerHTML = questionCard(true) + voteCard(); wireVote(); return; }
+  if (st.stage === 'REVEAL') { host.innerHTML = revealCard(); return; }
+  host.innerHTML = lobbyCard();
+}
+
+function lobbyCard() {
+  return card('', `<h3>Imposter</h3>
+    <p class="hint">Last week, so we are switching it up. No roles, no kills &mdash; just one game.</p>
+    <ol class="steps">
+      <li><span class="n">1</span><span>Everyone gets the same question on this screen &mdash; except one secret
+        <b>imposter</b>, who gets a slightly different one.</span></li>
+      <li><span class="n">2</span><span>Answer out loud when Hunter asks. Keep your screen to yourself.</span></li>
+      <li><span class="n">3</span><span>You get 2 minutes to vote for who you think the imposter was.</span></li>
+      <li><span class="n">4</span><span>Hunter reveals who it was and both questions.</span></li>
+    </ol>
+    <div class="note" style="margin:0">Waiting for Hunter to start round 1.</div>`);
+}
+
+function questionCard(compact) {
+  return `<div class="card qcard${compact ? ' compact' : ''}">
+    <div class="qk">Round ${st.round} &middot; your question</div>
+    <div class="qt">${esc(st.question || '…')}</div>
+    ${compact ? '' : '<p class="hint">Keep it to yourself and answer out loud when Hunter asks. One person has a different question &mdash; work out who.</p>'}
+  </div>`;
+}
+
+/* ------------------------------------------------------------- vote --- */
+function tile(p, vs, { extraCls = [], tag = '', tap = false } = {}) {
+  const meId = st.me.id;
+  return `<div class="${['vtile', ...extraCls, tap ? 'tap' : 'off'].filter(Boolean).join(' ')}"
+      ${tap ? `data-t="${esc(p.id)}" role="button" tabindex="0"` : ''}>
+    <div class="vhead">
+      ${crew(p.id)}
+      <span class="vmeta"><span class="vn">${esc(p.name)}${p.id === meId ? ' <em>(you)</em>' : ''}</span>${tag}</span>
+      <span class="vc">${vs.length || ''}</span>
+    </div>
+    <div class="vchips">${vs.length
+      ? vs.map((v) => `<span class="vchip${v === meId ? ' me' : ''}">${crew(v, 'mini')}${esc(v === meId ? 'You' : nameOf(v))}</span>`).join('')
+      : '<span class="vnone">No votes</span>'}</div>
+  </div>`;
+}
+
+function voteCard() {
+  const left = voteLeft();
+  const timeUp = left === 0;
+  const canVote = !timeUp;
+  const meId = st.me.id;
+  const { by, top, voted } = tally();
+  const mine = (st.votes || []).find((v) => v.voter_id === meId)?.target_id ?? null;
+  if (selected && (!canVote || selected === meId || !st.roster.some((p) => p.id === selected))) selected = null;
+
+  const tiles = st.roster.map((p) => {
+    const vs = by[p.id] || [];
+    return tile(p, vs, {
+      extraCls: [vs.length && vs.length === top ? 'lead' : '', p.id === mine ? 'mine' : '', p.id === selected ? 'sel' : ''],
+      tag: voted.has(p.id) ? '<span class="vtick">Voted</span>' : '',
+      tap: canVote && p.id !== meId
+    });
+  }).join('');
+
+  const pick = selected && selected !== mine;
+  const hint = timeUp
+    ? "Time's up. Voting is closed &mdash; Hunter will reveal the imposter."
+    : 'Tap who you think the imposter is, then confirm. Everyone can see your vote. Change it as often as you like until time runs out.';
+  const clockCls = timeUp ? ' done' : clockRunning() ? '' : ' paused';
+
+  return card('', `
+    <div class="vtop"><h3>Who's the imposter?</h3>
+      ${left !== null ? `<div class="vclock${clockCls}" id="vClock">${fmtClock(left)}</div>` : ''}</div>
+    <p class="hint">${hint}</p>
+    ${!timeUp && !clockRunning() ? '<div class="note">The clock is paused.</div>' : ''}
+    <div class="vboard">${tiles}</div>
+    ${canVote ? `<button id="vGo" ${pick ? '' : 'disabled'}>${
+        pick ? `Vote for ${esc(nameOf(selected))}`
+        : mine ? `You voted for ${esc(nameOf(mine))}`
+        : 'Tap a name to vote'}</button>` : ''}
+    <p class="hint" style="margin:12px 0 0">${voted.size} of ${st.roster.length} have voted.</p>
+    <div id="vMsg"></div>`);
+}
+
+function wireVote() {
+  document.querySelectorAll('#stageCard .vtile[data-t]').forEach((t) => {
+    const choose = () => { selected = t.dataset.t; paintStage(); };
+    t.onclick = choose;
+    t.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(); } };
+  });
+  const go = $('vGo');
+  if (go) go.onclick = castVote;
+}
+
+async function castVote() {
+  const target = selected;
+  if (!target) return say('vMsg', 'Tap someone first.', true);
+  if (voteLeft() === 0) return say('vMsg', "Time's up — votes are closed.", true);
+  busy = true;
+  $('vGo').disabled = true;
+  const { error } = await sb.rpc('imp_cast_vote', { p_target: target });
+  busy = false;
+  if (error) { paintStage(); return say('vMsg', explain(error.message), true); }
+  selected = null;
+  await refresh();
+  say('vMsg', 'Vote recorded.', false);
+}
+
+/* ----------------------------------------------------------- reveal --- */
+function revealCard() {
+  const r = st.reveal || {};
+  const { by, leaders } = tally();
+  const any = (st.votes || []).length > 0;
+  const caught = !!r.imposter_id && leaders.length === 1 && leaders[0] === r.imposter_id;
+  const isMe = r.imposter_id && r.imposter_id === st.me.id;
+  const outcome = !any ? 'Nobody voted this round.'
+    : caught ? 'The crew found the imposter!'
+    : leaders.includes(r.imposter_id) ? 'A tied vote &mdash; the imposter slipped away!'
+    : 'The imposter got away!';
+
+  const tiles = st.roster.map((p) => tile(p, by[p.id] || [], {
+    extraCls: [p.id === r.imposter_id ? 'imp' : ''],
+    tag: p.id === r.imposter_id ? '<span class="vtick red">Imposter</span>' : ''
+  })).join('');
+
+  const last = st.round >= st.total_rounds;
+  return card('', `
+    <div class="reveal ${caught ? 'caught' : 'escaped'}">
+      <div class="rk">Round ${st.round} &middot; the imposter was</div>
+      <div class="rfloat">${crew(r.imposter_id || r.imposter_name, 'big')}</div>
+      <div class="rn">${isMe ? 'You!' : esc(r.imposter_name || 'Unknown')}</div>
+      <div class="rr"><strong>${caught ? 'Caught' : 'Got away'}</strong></div>
+    </div>
+    <div class="qpair">
+      <div class="qbox"><div class="ql">Everyone's question</div><div class="qv">${esc(r.everyone_q)}</div></div>
+      <div class="qbox imp"><div class="ql">The imposter's question</div><div class="qv">${esc(r.imposter_q)}</div></div>
+    </div>
+    <p class="outcome">${outcome}</p>
+    <div class="vboard">${tiles}</div>
+    <p class="hint" style="margin:0">${last ? 'That was the last round.' : 'Hunter will start the next round shortly.'}</p>`);
+}
+
+function paintRoster() {
+  $('roster').innerHTML = (st.roster || []).map((p) => `<div class="who">
+      ${crew(p.id)}<span class="n">${esc(p.name)}</span>
+      ${st.me && p.id === st.me.id ? '<span class="you">You</span>' : ''}
+    </div>`).join('') || '<p class="hint" style="margin:0">No players yet.</p>';
+}
+
+/* Clock ticks locally; the board refreshes every 2.5 seconds while voting. */
+let lastLeft = null;
+setInterval(() => {
+  const left = voteLeft();
+  if (left === null) { lastLeft = null; return; }
+  const c = $('vClock');
+  if (c) {
+    c.textContent = fmtClock(left);
+    c.classList.toggle('done', left === 0);
+  }
+  if (lastLeft !== null && lastLeft > 0 && left === 0 && !busy) { selected = null; paintStage(); }
+  lastLeft = left;
+}, 500);
+
+/* ------------------------------------------------------------ utils --- */
+function say(id, msg, bad) {
+  const n = $(id);
+  if (n) n.innerHTML = `<div class="${bad ? 'err' : 'ok'}" style="margin:14px 0 0">${esc(msg)}</div>`;
+}
+function fail(msg) { $('err').innerHTML = `<div class="err">${esc(msg)}</div>`; }
+function explain(m) {
+  if (/TIME_UP/.test(m)) return "Time's up — votes are closed.";
+  if (/VOTING_CLOSED/.test(m)) return 'Voting is not open right now.';
+  if (/BAD_TARGET/.test(m)) return 'You cannot vote for that player.';
+  if (/NO_SEAT/.test(m)) return 'No player is linked to your login. Tell Hunter.';
+  return m;
+}
+
+/* ------------------------------------------------------------- boot --- */
+$('go').onclick = async () => {
+  $('err').innerHTML = '';
+  const { error } = await sb.auth.signInWithPassword({
+    email: $('email').value.trim().toLowerCase(),
+    password: $('pw').value
+  });
+  if (error) return fail(error.message);
+  load();
+};
+$('pw').onkeydown = (e) => { if (e.key === 'Enter') $('go').click(); };
+$('out').onclick = async () => {
+  clearTimeout(timer);
+  await sb.auth.signOut();
+  location.reload();
+};
+
+const { data: { session } } = await sb.auth.getSession();
+if (session) load();
+</script>
+</body>
+</html>
